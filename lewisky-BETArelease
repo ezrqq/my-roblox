@@ -27,7 +27,7 @@ Bandage = Color3.fromRGB(219, 112, 147)
 PlayerColors = {
 Survivor = Color3.fromRGB(50, 205, 50),
 Slasher = Color3.fromRGB(255, 48, 48),
-SlasherChainsawMissing = Color3.fromRGB(128, 0, 128)
+SlasherWithChainsaw = Color3.fromRGB(128, 0, 128)
 },
 LabelSize = UDim2.new(0, 140, 0, 24),
 LabelOffset = Vector3.new(0, 3, 0),
@@ -115,6 +115,7 @@ local menuScrollPosition = 0
 local slasherESPColor = CONFIG.PlayerColors.Slasher
 local mainGlowFrames = {}
 local slasherSortType = "N/A"
+local slasherChainsawCount = "N/A"
 local fullbrightToggle_Button = nil
 local fullbrightToggle_Indicator = nil
 local function findInPath(root, path)
@@ -239,6 +240,17 @@ if not stats then return nil end
 local teamColor = stats:FindFirstChild("TeamColor")
 return teamColor and teamColor.Value
 end
+local function findStats(model)
+    if not model then return nil end
+    local stats = model:FindFirstChild("Stats")
+    if stats then return stats end
+    local kit = model:FindFirstChild("Kit")
+    if kit then
+        stats = kit:FindFirstChild("Stats")
+        if stats then return stats end
+    end
+    return nil
+end
 local function updateCharacterESP(model)
 local success, err = pcall(function()
 if not model or model == LocalPlayer.Character then
@@ -251,14 +263,14 @@ removeESP(model)
 return
 end
 local isFriend = player and isFriendOfLocal(player)
-local stats = model:FindFirstChild("Stats") or (model:FindFirstChild("Kit") and model.Kit:FindFirstChild("Stats"))
+local stats = findStats(model)
 if stats then
 local typ = stats:FindFirstChild("Type")
 if typ and typ:IsA("StringValue") then
 local isSlasher = (typ.Value:lower() == "slasher")
 local playerName = player.Name
 if isSlasher and state.showSlasher then
-createESP(model, playerName .. " [Slasher] ", slasherESPColor, "Slasher", true)
+createESP(model, playerName .. " [Slasher] ", CONFIG.PlayerColors.Slasher, "Slasher", true)
 return
 end
 end
@@ -488,15 +500,15 @@ if state.removeGenophage then
 genophageCC.Enabled = false
 genophageCC.Brightness = 0
 else
-genophageCC.Enabled = originalGenophageEnabled
-genophageCC.Brightness = originalGenophageBrightness
+genophageCC.Enabled = true
+genophageCC.Brightness = -2
 end
 end
 local function setupGenophageProtection()
 local function reapplyGenophage()
-if not state.removeGenophage then return end
 local genophageCC = Lighting:FindFirstChild("GenophageColorCorrection")
-if genophageCC then
+if not genophageCC then return end
+if state.removeGenophage then 
 local success, err = pcall(function()
 genophageCC.Enabled = false
 genophageCC.Brightness = 0
@@ -511,8 +523,12 @@ table.insert(connections, genophageCC:GetPropertyChangedSignal("Brightness"):Con
 else
 local connection = Lighting.ChildAdded:Connect(function(child)
 if child.Name == "GenophageColorCorrection" then
+if originalGenophageEnabled == nil then
 originalGenophageEnabled = child.Enabled
+end
+if originalGenophageBrightness == nil then
 originalGenophageBrightness = child.Brightness
+end
 table.insert(connections, child:GetPropertyChangedSignal("Enabled"):Connect(reapplyGenophage))
 table.insert(connections, child:GetPropertyChangedSignal("Brightness"):Connect(reapplyGenophage))
 reapplyGenophage()
@@ -655,9 +671,9 @@ local cycleDuration = 2.5
 local minColor = Color3.fromRGB(150, 150, 150)
 local maxColor = CONFIG.Visual.GlowColor
 local runningTask = task.spawn(function()
-while task.wait(1/60) do 
+while task.wait(1/60) do
 local timeFactor = (tick() % cycleDuration) / cycleDuration
-local progress = 0.5 * math.sin(timeFactor * math.pi * 2) + 0.5 
+local progress = 0.5 * math.sin(timeFactor * math.pi * 2) + 0.5
 local newColor = minColor:Lerp(maxColor, progress)
 for i = #mainGlowFrames, 1, -1 do
 local frame = mainGlowFrames[i]
@@ -1219,7 +1235,7 @@ screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Enabled = state.showStatsUI
 screenGui.Parent = PlayerGui
 local frame = createRoundedFrame(
-UDim2.new(0, 220, 0, 34),
+UDim2.new(0, 220, 0, 32),
 UDim2.new(0.25, -110, 0, 10),
 screenGui,
 {thicknessMultiplier = 0.5},
@@ -1232,7 +1248,7 @@ frame.Name = "StatsFrame"
 frame.ClipsDescendants = true
 local statsLabel = Instance.new("TextLabel")
 statsLabel.Name = "StatsLabel"
-statsLabel.Size = UDim2.new(1, -10, 0, 18)
+statsLabel.Size = UDim2.new(1, -10, 0, 16)
 statsLabel.Position = UDim2.new(0, 5, 0, 2)
 statsLabel.BackgroundTransparency = 1
 statsLabel.Text = "C: 0 | F: 0 | M: 0 | B: 0 | BD: 0"
@@ -1244,7 +1260,7 @@ statsLabel.Parent = frame
 local slasherLabel = Instance.new("TextLabel")
 slasherLabel.Name = "SlasherLabel"
 slasherLabel.Size = UDim2.new(1, -10, 0, 12)
-slasherLabel.Position = UDim2.new(0, 5, 0, 20)
+slasherLabel.Position = UDim2.new(0, 5, 0, 18)
 slasherLabel.BackgroundTransparency = 1
 slasherLabel.Text = "Slasher Type: N/A"
 slasherLabel.Font = Enum.Font.Gotham
@@ -1260,37 +1276,12 @@ slasherLabel = slasherLabel
 }
 return statsUI
 end
-local function checkChainsaws()
-local slasherChar = nil
-for _, player in ipairs(Players:GetPlayers()) do
-if player.Character then
-local stats = player.Character:FindFirstChild("Kit", true) and player.Character.Kit:FindFirstChild("Stats")
-if stats then
-local typ = stats:FindFirstChild("Type")
-if typ and typ:IsA("StringValue") and typ.Value:lower() == "slasher" then
-slasherChar = player.Character
-break
-end
-end
-end
-end
-if slasherChar then
-local stats = slasherChar:FindFirstChild("Kit", true) and slasherChar.Kit:FindFirstChild("Stats")
-local chainsawFound = stats and stats:FindFirstChild("ChainsawFound")
-if chainsawFound and chainsawFound:IsA("BoolValue") and chainsawFound.Value == true then
-slasherESPColor = CONFIG.PlayerColors.Slasher
-else
-slasherESPColor = CONFIG.PlayerColors.SlasherChainsawMissing
-end
-else
-slasherESPColor = CONFIG.PlayerColors.SlasherChainsawMissing
-end
-end
 runningTasks.espUpdate = task.spawn(function()
 while task.wait(0.1) do
-checkChainsaws()
 local success, err = pcall(function()
 slasherSortType = "N/A"
+slasherChainsawCount = "N/A"
+local slasherFoundForUI = false
 if not (state.showSlasher or state.showSurvivors or state.showFriends or state.showEscapes or state.showBatterys or state.showBandages) then
 return
 end
@@ -1305,16 +1296,42 @@ if info and info.adornee and info.gui and info.gui.Parent then
 local adornee = info.adornee
 if adornee and adornee.Parent then
 if info.type == "Slasher" then
-info.box.Color3 = slasherESPColor
-local stats = obj:FindFirstChild("Stats") or (obj:FindFirstChild("Kit") and obj.Kit:FindFirstChild("Stats"))
+local currentSlasherColor = CONFIG.PlayerColors.Slasher
+local hasChainsaw = false
+local stats = findStats(obj)
 if stats then
+local chainsawFound = stats:FindFirstChild("ChainsawFound")
+if chainsawFound and chainsawFound:IsA("BoolValue") and chainsawFound.Value == true then
+hasChainsaw = true
+currentSlasherColor = CONFIG.PlayerColors.SlasherWithChainsaw
+end
+if not slasherFoundForUI then
+slasherFoundForUI = true
 local sortType = stats:FindFirstChild("SortType")
 if sortType and sortType:IsA("StringValue") then
 slasherSortType = sortType.Value
 else
 slasherSortType = "Unknown"
 end
+if hasChainsaw then
+local chainsawCountVal = stats:FindFirstChild("Chainsaw")
+if chainsawCountVal and chainsawCountVal:IsA("NumberValue") then
+slasherChainsawCount = chainsawCountVal.Value
+else
+slasherChainsawCount = "ERR"
 end
+else
+slasherChainsawCount = "N/A"
+end
+end
+else
+if not slasherFoundForUI then
+slasherFoundForUI = true
+slasherSortType = "Unknown"
+slasherChainsawCount = "N/A"
+end
+end
+info.box.Color3 = currentSlasherColor
 local espText = info.gui:FindFirstChild("ESP_Text")
 if espText and info.playerName then
 local dist = (adornee.Position - hrpPosition).Magnitude
@@ -1352,7 +1369,7 @@ end
 if statsUI and statsUI.label and statsUI.slasherLabel then
 statsUI.label.Text = string.format("C: %d | F: %d | M: %d | B: %d | BD: %d",
 itemCounts.coins, itemCounts.films, itemCounts.medkits, itemCounts.batterys, itemCounts.bandages)
-statsUI.slasherLabel.Text = string.format("Slasher Type: %s", slasherSortType)
+statsUI.slasherLabel.Text = string.format("Slasher Type: %s | Ch: %s", slasherSortType, tostring(slasherChainsawCount))
 end
 end)
 if not success then warn("[ESP] espUpdate Loop Error:", err) end
@@ -1399,7 +1416,7 @@ end)
 local function cleanup()
 for _, taskThread in pairs(runningTasks) do
 if type(taskThread) == "thread" then
-task.cancel(taskThread)
+task.cancel(taskTask)
 end
 end
 runningTasks = {}
