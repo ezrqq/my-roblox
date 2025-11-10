@@ -1,6 +1,3 @@
--- STN Enhanced v2.0 - Optimized & Stable
--- by ezrqq
-
 --[[ SERVICES ]]
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
@@ -95,10 +92,10 @@ local state = {
 
 --[[ METATABLES FOR MEMORY OPTIMIZATION ]]
 local espHandles = {}
-setmetatable(espHandles, {__mode = "k"}) -- Weak keys - auto cleanup
+setmetatable(espHandles, {__mode = "k"}) 
 
 local friendsCache = {}
-setmetatable(friendsCache, {__mode = "kv"}) -- Weak both
+setmetatable(friendsCache, {__mode = "kv"}) 
 
 --[[ DATA STRUCTURES ]]
 local connections = {}
@@ -118,7 +115,6 @@ setmetatable(mainGlowFrames, {__mode = "v"})
 --[[ STATE TRACKING ]]
 local myTeamColor = nil
 local statsUI = nil
-local logUI = nil
 local itemCounts = {coins = 0, films = 0, medkits = 0, batterys = 0, bandages = 0}
 local menuScrollPosition = 0
 local slasherSortType = "N/A"
@@ -634,29 +630,18 @@ local function setupAutoPickup()
         local hrpPos = hrp.Position
         local itemsToCheck = {}
         
-        local checkFolders = {
-            {path = CONFIG.FilmsFolder, enabled = state.showFilms},
-            {path = CONFIG.CoinsFolder, enabled = state.showCoins}
-        }
-        
-        for _, folderData in ipairs(checkFolders) do
-            if folderData.enabled then
-                local folder = findInPath(Workspace, folderData.path)
-                if folder then
-                    for _, item in ipairs(folder:GetChildren()) do
-                        local prompt = item:FindFirstChildOfClass("ProximityPrompt", true)
-                        if prompt and prompt.Enabled and not pickedUpPrompts[prompt] then
-                            local itemPart = item:IsA("BasePart") and item or item:FindFirstChildWhichIsA("BasePart", true)
-                            if itemPart then
-                                local dist = (itemPart.Position - hrpPos).Magnitude
-                                if dist < 100 then
-                                    table.insert(itemsToCheck, {
-                                        item = item,
-                                        prompt = prompt,
-                                        distance = dist
-                                    })
-                                end
-                            end
+        for obj, info in pairs(espHandles) do
+            if (info.type == "Film" and state.showFilms) or (info.type == "Coin" and state.showCoins) then
+                if info.adornee and info.adornee.Parent then
+                    local prompt = obj:FindFirstChildOfClass("ProximityPrompt", true)
+                    if prompt and prompt.Enabled and not pickedUpPrompts[prompt] then
+                        local dist = (info.adornee.Position - hrpPos).Magnitude
+                        if dist < 100 then
+                             table.insert(itemsToCheck, {
+                                item = obj,
+                                prompt = prompt,
+                                distance = dist
+                            })
                         end
                     end
                 end
@@ -778,248 +763,6 @@ local function setupDynamicGlow()
     return runningTask
 end
 
-local function createLogUI()
-    if logUI then
-        logUI:Destroy()
-        logUI = nil
-    end
-    
-    local screenGui = Instance.new("ScreenGui")
-    logUI = screenGui
-    screenGui.Name = "UpdateLogsUI"
-    screenGui.ResetOnSpawn = false
-    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-    safeCall(function() screenGui.Parent = PlayerGui end, "createLogUI")
-    
-    local width, height = 550, 400
-    local frame = createRoundedFrame(
-        UDim2.new(0, width, 0, height),
-        UDim2.new(0.5, -width/2, 0.5, -height/2),
-        screenGui,
-        {thicknessMultiplier = 1.5},
-        0.2,
-        Color3.fromRGB(15, 15, 15)
-    )
-    table.insert(mainGlowFrames, frame)
-    frame.ClipsDescendants = true
-    
-    local titleBar = createRoundedFrame(
-        UDim2.new(1, 0, 0, 40),
-        UDim2.new(0, 0, 0, 0),
-        frame,
-        false,
-        COLLAPSED_TRANS,
-        Color3.fromRGB(25, 25, 25),
-        UDim.new(0, 8)
-    )
-    
-    local title = Instance.new("TextLabel")
-    title.Size = UDim2.new(1, -20, 1, 0)
-    title.Position = UDim2.new(0, 10, 0, 0)
-    title.BackgroundTransparency = 1
-    title.Text = "ХОТФИКС 0.9.2"
-    title.Font = Enum.Font.GothamBold
-    title.TextSize = 18
-    title.TextColor3 = Color3.fromRGB(200, 200, 200)
-    title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Parent = titleBar
-    
-    local closeBtn = createRoundedFrame(
-        UDim2.new(0, 30, 0, 30),
-        UDim2.new(1, -40, 0.5, -15),
-        titleBar,
-        false,
-        0.5,
-        Color3.fromRGB(50, 50, 50),
-        UDim.new(0, 8)
-    )
-    
-    local closeText = Instance.new("TextButton")
-    closeText.Size = UDim2.new(1, 0, 1, 0)
-    closeText.Text = "X"
-    closeText.Font = Enum.Font.GothamBold
-    closeText.TextSize = 20
-    closeText.TextColor3 = Color3.fromRGB(255, 255, 255)
-    closeText.BackgroundTransparency = 1
-    closeText.Parent = closeBtn
-    closeText.MouseButton1Click:Connect(function()
-        screenGui:Destroy()
-        logUI = nil
-    end)
-    
-    local scrollFrame = Instance.new("ScrollingFrame")
-    scrollFrame.Name = "ScrollContent"
-    scrollFrame.Size = UDim2.new(1, -20, 1, -50)
-    scrollFrame.Position = UDim2.new(0, 10, 0, 45)
-    scrollFrame.BackgroundTransparency = 1
-    scrollFrame.BorderSizePixel = 0
-    scrollFrame.ScrollBarThickness = 6
-    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 80)
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-    scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    scrollFrame.Parent = frame
-    
-    local content = Instance.new("Frame")
-    content.Name = "Content"
-    content.Size = UDim2.new(1, 0, 0, 0)
-    content.AutomaticSize = Enum.AutomaticSize.Y
-    content.BackgroundTransparency = 1
-    content.Parent = scrollFrame
-    
-    local contentPadding = Instance.new("UIPadding")
-    contentPadding.PaddingLeft = UDim.new(0, 10)
-    contentPadding.PaddingRight = UDim.new(0, 10)
-    contentPadding.PaddingTop = UDim.new(0, 10)
-    contentPadding.PaddingBottom = UDim.new(0, 10)
-    contentPadding.Parent = content
-    
-    local contentLayout = Instance.new("UIListLayout")
-    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    contentLayout.Padding = UDim.new(0, 5)
-    contentLayout.Parent = content
-    
-    local logContent = [[
-–ОБНОВЛЕНО В v2.0–
-– Полная оптимизация кода с использованием metatables
-– Исправлены утечки памяти (weak tables)
-– Улучшена видимость Glow эффектов (x2.5 яркость)
-– Добавлена опция отключения Glow для экономии батареи
-– Оптимизирован главный цикл обновления ESP
-– Добавлена защита от race conditions
-– Улучшена стабильность при большом количестве объектов
-–ДОБАВЛЕНО–
-– Новый элемент интерфейса для Metal Bat
-– По карте теперь появляются бинты, которые восстанавливают лишь часть здоровья
-–ИЗМЕНЕНИЯ–
-– Отключён shiftlock
-– Улучшена видимость игровых уведомлений
-– Время обнаружения убийцы в 5 утра сокращено до 5 секунд
-– Кнопка бензопилы у убийцы перенесена на правую сторону экрана (на мобильных устройствах)
-– Теперь нельзя менять экипировку после полуночи, до начала раунда
-– Множитель оглушения за каждое очко силы увеличен с 16.7% до 25%
-– Увеличение скорости за каждое очко ловкости снижено с 0.666 до 0.5 единиц скорости
-– Аптечки теперь восстанавливают только жетон возрождения
-– Количество появлений аптечек уменьшено с 5 до 3
-– Количество появлений бинтов увеличено с 0 до 9
-– Время парирования для Metal Bat уменьшено с 1 до 0.75 секунды
-– Metal Bat теперь использует собственный режим shiftlock при экипировке
-– Cassette Player теперь использует собственный режим shiftlock при экипировке
-– Камера теперь использует собственный режим shiftlock при экипировке
-– Химсвет теперь использует собственный режим shiftlock при экипировке
-– Фонарик теперь использует собственный режим shiftlock при экипировке
-– Время ослепления и замедления от фонарика снижено с 1.5 до 1 секунды
-– Сила замедления от фонарика увеличена с 25% до 50%
-– Прирост скорости от фонаря уменьшен с 15% до 10%
-– Улучшена читаемость текста на классическом скине трекера для Motion Detector
-– Немного увеличен размер классического скина трекера для Motion Detector
-– Способность Жака теперь притягивает выживших и делает вас значительно тяжелее
-– Способность Невидимки теперь автоматически активируется через 3 секунды после установки
-– Штраф к скорости в фокус-режиме Невидимки немного уменьшен
-– Штраф к скорости в фокус-режиме Тёмного Лорда немного уменьшен
-– Штраф к скорости в фокус-режиме Экстерминатора немного уменьшен
-– Способность Генофага теперь полностью затемняет экран
-– Видимость при приседании во время способности Генофага снижена с 20% до 10%
-– Длительность способности Генофага увеличена с 3 до 4 секунд
-– Время перезарядки способности Генофага уменьшена с 2 до 1 секунды
-–ИСПРАВЛЕНО–
-– Анимации прыжка и падения теперь заменены, чтобы устранить эксплойты с хитбоксами
-– Исправлена ошибка, из-за которой предметы отображались как некупленные, даже при наличии скина
-– Исправлен сбой, из-за которого удар Metal Bat не отменялся после блока
-– Исправлено отсутствие иммунитета у убийцы при использовании бензопилы
-– Исправлено ситуация, когда дефибриллятор (AED) не возрождал корректно
-– Исправлены окна, по которым можно забираться, в главном доме на карте Farmhouse
-– Исправлена ошибка, когда при провале мини-игры сердцебиения сигналы уходили убийце прямо из лобби
-– Исправлено неправильное отображение лишних десятичных знаков XP на экране победы
-– Исправлена ошибка, из-за которой способность Тёмного Лорда могла навсегда инвертировать управление при смерти под её действием
-– Исправлено некорректное применение бонуса силы для перков, не связанных с силой
-]]
-    
-    local lines = {}
-    for line in logContent:gmatch("[^\r\n]+") do
-        table.insert(lines, line)
-    end
-    
-    for _, line in ipairs(lines) do
-        local isHeader = line:match("^–[%wА-ЯЁ]+–")
-        local text = line
-        
-        if isHeader then
-            text = text:gsub("–$", ""):gsub("^–", "")
-            local textColor, bgColor
-            
-            if text == "ОБНОВЛЕНО В v2.0" then
-                textColor = Color3.fromRGB(100, 255, 255)
-                bgColor = Color3.fromRGB(25, 45, 50)
-            elseif text == "ДОБАВЛЕНО" then
-                textColor = Color3.fromRGB(100, 255, 100)
-                bgColor = Color3.fromRGB(25, 45, 25)
-            elseif text == "ИЗМЕНЕНИЯ" then
-                textColor = Color3.fromRGB(255, 255, 100)
-                bgColor = Color3.fromRGB(45, 45, 25)
-            elseif text == "ИСПРАВЛЕНО" then
-                textColor = Color3.fromRGB(100, 200, 255)
-                bgColor = Color3.fromRGB(25, 35, 45)
-            else
-                textColor = Color3.fromRGB(255, 255, 255)
-                bgColor = Color3.fromRGB(35, 35, 35)
-            end
-            
-            local lineFrame = createRoundedFrame(
-                UDim2.new(1, 0, 0, 35),
-                nil,
-                content,
-                false,
-                0.5,
-                bgColor,
-                UDim.new(0, 5)
-            )
-            
-            local lineText = Instance.new("TextLabel")
-            lineText.Size = UDim2.new(1, -20, 1, 0)
-            lineText.Position = UDim2.new(0, 10, 0, 0)
-            lineText.BackgroundTransparency = 1
-            lineText.Text = text
-            lineText.Font = Enum.Font.GothamBold
-            lineText.TextSize = 16
-            lineText.TextColor3 = textColor
-            lineText.TextXAlignment = Enum.TextXAlignment.Center
-            lineText.TextYAlignment = Enum.TextYAlignment.Center
-            lineText.Parent = lineFrame
-        else
-            text = text:gsub("^–", "")
-            
-            local lineFrame = createRoundedFrame(
-                UDim2.new(1, 0, 0, 28),
-                nil,
-                content,
-                false,
-                0.5,
-                Color3.fromRGB(30, 30, 30),
-                UDim.new(0, 5)
-            )
-            
-            local lineText = Instance.new("TextLabel")
-            lineText.Size = UDim2.new(1, -20, 1, 0)
-            lineText.Position = UDim2.new(0, 10, 0, 0)
-            lineText.BackgroundTransparency = 1
-            lineText.Text = text
-            lineText.Font = Enum.Font.Gotham
-            lineText.TextSize = 14
-            lineText.TextColor3 = Color3.fromRGB(180, 180, 180)
-            lineText.TextWrapped = true
-            lineText.TextXAlignment = Enum.TextXAlignment.Left
-            lineText.TextYAlignment = Enum.TextYAlignment.Top
-            lineText.AutomaticSize = Enum.AutomaticSize.Y
-            lineText.Parent = lineFrame
-            
-            lineText:GetPropertyChangedSignal("Size"):Connect(function()
-                local newHeight = lineText.Size.Y.Offset + 10
-                lineFrame.Size = UDim2.new(1, 0, 0, newHeight)
-            end)
-        end
-    end
-end
-
 local function createUI()
     local oldGui = PlayerGui:FindFirstChild("ESP_UI")
     if oldGui then oldGui:Destroy() end
@@ -1057,7 +800,7 @@ local function createUI()
     title.Size = UDim2.new(1, -80, 1, 0)
     title.Position = UDim2.new(0, 15, 0, 0)
     title.BackgroundTransparency = 1
-    title.Text = "made by ezrqq [v2.0 STABLE | 0.9.2]"
+    title.Text = "made by ezrqq v1.6 BETA | 0.9.2"
     title.Font = Enum.Font.GothamBold
     title.TextSize = 16
     title.TextColor3 = Color3.fromRGB(255, 255, 255)
@@ -1238,36 +981,6 @@ local function createUI()
         setupAutoPickup()
     end)
     
-    local logsButtonFrame = createRoundedFrame(
-        UDim2.new(1, 0, 0, 40),
-        nil,
-        content,
-        false,
-        0.5,
-        Color3.fromRGB(40, 40, 40),
-        UDim.new(0, 8)
-    )
-    
-    local logsButton = Instance.new("TextButton")
-    logsButton.Size = UDim2.new(1, 0, 1, 0)
-    logsButton.Text = "VIEW UPDATE LOGS"
-    logsButton.Font = Enum.Font.GothamBold
-    logsButton.TextSize = 14
-    logsButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-    logsButton.BackgroundTransparency = 1
-    logsButton.Parent = logsButtonFrame
-    logsButton.MouseButton1Click:Connect(function()
-        safeCall(function()
-            if logUI then
-                logUI:Destroy()
-                logUI = nil
-            else
-                createLogUI()
-            end
-        end, "toggleLogUI")
-    end)
-    
-    -- Dragging
     local dragging = false
     local dragInput = nil
     local dragStart = nil
@@ -1304,7 +1017,6 @@ local function createUI()
         end
     end)
     
-    -- Toggle visibility with M key
     UserInputService.InputBegan:Connect(function(input)
         if input.KeyCode == Enum.KeyCode.M then
             local scrollFrame = frame:FindFirstChild("ScrollContent")
@@ -1407,7 +1119,6 @@ runningTasks.espUpdate = task.spawn(function()
                     if adornee and adornee.Parent then
                         local distance = (adornee.Position - hrpPosition).Magnitude
                         
-                        -- Skip very distant objects for performance (except slasher)
                         if distance > CONFIG.Performance.MaxESPDistance and info.type ~= "Slasher" then
                             continue
                         end
@@ -1418,10 +1129,13 @@ runningTasks.espUpdate = task.spawn(function()
                             local stats = findStats(obj)
                             
                             if stats then
-                                local chainsawFound = stats:FindFirstChild("ChainsawFound")
-                                if chainsawFound and chainsawFound:IsA("BoolValue") and chainsawFound.Value == true then
+                                local chainsawCountVal = stats:FindFirstChild("Chainsaw")
+                                if chainsawCountVal and chainsawCountVal:IsA("NumberValue") and chainsawCountVal.Value > 0 then
                                     hasChainsaw = true
                                     currentSlasherColor = CONFIG.PlayerColors.SlasherWithChainsaw
+                                else
+                                    hasChainsaw = false
+                                    currentSlasherColor = CONFIG.PlayerColors.Slasher
                                 end
                                 
                                 if not slasherFoundForUI then
@@ -1434,17 +1148,13 @@ runningTasks.espUpdate = task.spawn(function()
                                     end
                                     
                                     if hasChainsaw then
-                                        local chainsawCountVal = stats:FindFirstChild("Chainsaw")
-                                        if chainsawCountVal and chainsawCountVal:IsA("NumberValue") then
-                                            slasherChainsawCount = tostring(chainsawCountVal.Value)
-                                        else
-                                            slasherChainsawCount = "ERR"
-                                        end
+                                        slasherChainsawCount = tostring(chainsawCountVal.Value)
                                     else
-                                        slasherChainsawCount = "0"
+                                        slasherChainsawCount = "N/A"
                                     end
                                 end
-                            else
+                                
+                            else 
                                 if not slasherFoundForUI then
                                     slasherFoundForUI = true
                                     slasherSortType = "Unknown"
@@ -1452,14 +1162,14 @@ runningTasks.espUpdate = task.spawn(function()
                                 end
                             end
                             
-                            -- Update box color
                             if info.box and info.box.Parent then
                                 info.box.Color3 = currentSlasherColor
                             end
                             
                             local espText = info.gui:FindFirstChild("ESP_Text")
                             if espText and info.playerName then
-                                espText.Text = string.format("%s [Slasher] (%.0fm)", info.playerName, distance)
+                                local distText = (distance > 2000) and "" or string.format(" (%.0fm)", distance)
+                                espText.Text = string.format("%s [Slasher]%s", info.playerName, distText)
                                 
                                 if distance < 125 then
                                     espText.TextColor3 = Color3.fromRGB(255, 0, 0)
@@ -1472,7 +1182,8 @@ runningTasks.espUpdate = task.spawn(function()
                         elseif info.type == "Escape" then
                             local espText = info.gui:FindFirstChild("ESP_Text")
                             if espText then
-                                espText.Text = string.format("Escape (%.0fm)", distance)
+                                local distText = (distance > 2000) and "" or string.format(" (%.0fm)", distance)
+                                espText.Text = string.format("Escape%s", distText)
                             end
                         elseif info.type == "Coin" then
                             itemCounts.coins = itemCounts.coins + 1
@@ -1573,7 +1284,6 @@ local function cleanup()
     
     disconnectMonitors()
     
-    -- Restore lighting
     safeCall(function()
         Lighting.Brightness = originalLighting.Brightness
         Lighting.FogEnd = originalLighting.FogEnd
@@ -1611,11 +1321,6 @@ local function cleanup()
         statsUI = nil
     end
     
-    if logUI then
-        logUI:Destroy()
-        logUI = nil
-    end
-    
     print("[STN] Cleanup completed successfully")
 end
 
@@ -1640,7 +1345,6 @@ task.delay(1, function()
             applyFullbright()
             applyEnhancedFullbright()
             
-            -- Find and update UI toggle if it exists
             local espUI = PlayerGui:FindFirstChild("ESP_UI")
             if espUI then
                 local mainFrame = espUI:FindFirstChild("MainFrame")
