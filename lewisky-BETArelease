@@ -141,6 +141,9 @@ local genophageCC = Lighting:FindFirstChild("GenophageColorCorrection")
 if genophageCC then
     originalLighting.GenophageEnabled = genophageCC.Enabled
     originalLighting.GenophageBrightness = genophageCC.Brightness
+else
+    originalLighting.GenophageEnabled = true
+    originalLighting.GenophageBrightness = -2
 end
 
 --[[ UTILITY FUNCTIONS ]]
@@ -148,11 +151,13 @@ local function safeCall(func, context)
     local success, err = pcall(func)
     if not success then
         warn(string.format("[STN] Error in %s: %s", context or "unknown", tostring(err)))
+        warn("Stack Traceback:\n" .. debug.traceback(tostring(err), 2))
     end
     return success
 end
 
 local function findInPath(root, path)
+    if not path then return nil end
     local obj = root
     for _, name in ipairs(path) do
         if not obj then return nil end
@@ -370,7 +375,7 @@ local function disconnectMonitors()
     end
     monitoredFolders = {}
     
-    for _, connection in pairs(itemPromptConnections) do
+    for obj, connection in pairs(itemPromptConnections) do
         if connection and connection.Disconnect then
             connection:Disconnect()
         end
@@ -444,9 +449,9 @@ local function updateAllESP()
         clearAllESP()
         detectAndSetupMonitors()
         
-        for _, obj in ipairs(Workspace:GetChildren()) do
-            if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj ~= LocalPlayer.Character then
-                updateCharacterESP(obj)
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                updateCharacterESP(player.Character)
             end
         end
     end, "updateAllESP")
@@ -575,8 +580,8 @@ local function applyGenophageRemoval()
             cc.Enabled = false
             cc.Brightness = 0
         else
-            cc.Enabled = true
-            cc.Brightness = -2
+            cc.Enabled = originalLighting.GenophageEnabled
+            cc.Brightness = originalLighting.GenophageBrightness
         end
     end, "applyGenophageRemoval")
 end
@@ -595,6 +600,9 @@ local function setupGenophageProtection()
     else
         local connection = Lighting.ChildAdded:Connect(function(child)
             if child.Name == "GenophageColorCorrection" then
+                originalLighting.GenophageEnabled = child.Enabled
+                originalLighting.GenophageBrightness = child.Brightness
+                
                 table.insert(connections, child:GetPropertyChangedSignal("Enabled"):Connect(reapply))
                 table.insert(connections, child:GetPropertyChangedSignal("Brightness"):Connect(reapply))
                 reapply()
@@ -665,9 +673,7 @@ local function setupAutoPickup()
                     end
                 end, "autoPickup")
                 
-                task.delay(0.01, function()
-                    pickedUpPrompts[closest.prompt] = nil
-                end)
+                pickedUpPrompts[closest.prompt] = nil
             end)
         end
     end
@@ -982,38 +988,27 @@ local function createUI()
     end)
     
     local dragging = false
-    local dragInput = nil
     local dragStart = nil
     local startPos = nil
-    
-    local function update(input)
-        local delta = input.Position - dragStart
-        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
     
     titleBar.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
             dragging = true
             dragStart = input.Position
             startPos = frame.Position
-            
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                end
-            end)
-        end
-    end)
-    
-    titleBar.InputChanged:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-            dragInput = input
         end
     end)
     
     UserInputService.InputChanged:Connect(function(input)
-        if input == dragInput and dragging then
-            update(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
         end
     end)
     
@@ -1321,6 +1316,9 @@ local function cleanup()
         statsUI = nil
     end
     
+    local oldGui = PlayerGui:FindFirstChild("ESP_UI")
+    if oldGui then oldGui:Destroy() end
+    
     print("[STN] Cleanup completed successfully")
 end
 
@@ -1331,8 +1329,8 @@ Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
-script.AncestryChanged:Connect(function()
-    if not script.Parent then
+script.AncestryChanged:Connect(function(_, parent)
+    if not parent then
         cleanup()
     end
 end)
