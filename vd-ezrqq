@@ -1,0 +1,533 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local LP = LocalPlayer
+
+local ANIM_DURATION = 0.7
+
+local CONFIG = {
+    Visual = {
+        CornerRadius = UDim.new(0, 10),
+        GlowColor = Color3.fromRGB(255, 255, 255),
+        GlowThickness = 1.5,
+        GlowTransparency = 0.7,
+    }
+}
+
+local Hook = {
+    Players = {
+        ["Killer"] = {Color = Color3.fromRGB(255, 0, 0), On = true},
+        ["Survivor"] = {Color = Color3.fromRGB(0, 255, 0), On = true},
+        ["Friends"] = {Color = Color3.fromRGB(0, 200, 255), On = true}
+    },
+    Objects = {
+        ["Generator"] = {Color = Color3.fromRGB(203, 132, 66), On = true},
+        ["Gate"] = {Color = Color3.fromRGB(255, 255, 255), On = true},
+        ["Pallet"] = {Color = Color3.fromRGB(255, 255, 0), On = true},
+        ["Window"] = {Color = Color3.fromRGB(255, 255, 255), On = true},
+        ["Hook"] = {Color = Color3.fromRGB(255, 0, 0), On = true},
+        ["Pumpkin"] = {Color = Color3.fromRGB(255, 140, 0), On = true}
+    }
+}
+
+local state = {
+    enableGlow = true
+}
+
+local mainGlowFrames = {}
+setmetatable(mainGlowFrames, {__mode = "v"})
+
+local runningTasks = {}
+local connections = {}
+local menuScrollPosition = 0
+
+local function ESP(obj, color)
+    if obj:FindFirstChild("H") then return end
+    local h = Instance.new("Highlight")
+    h.Name = "H"
+    h.Adornee = obj
+    h.FillColor = color
+    h.OutlineColor = color
+    h.FillTransparency = 0.9
+    h.OutlineTransparency = 0
+    h.Parent = obj
+end
+
+local function removeESP(obj)
+    if not obj then return end
+    local h = obj:FindFirstChild("H")
+    if h then
+        h:Destroy()
+    end
+end
+
+local function addHookESP(hookModel, color)
+    if hookModel:FindFirstChild("Model") then
+        for _, part in ipairs(hookModel.Model:GetDescendants()) do
+            if part:IsA("MeshPart") then
+                ESP(part, color)
+            end
+        end
+    end
+    if hookModel:FindFirstChild("Cartoony Blood Puddle") then
+        ESP(hookModel["Cartoony Blood Puddle"], color)
+    end
+end
+
+local function removeHookESP(hookModel)
+     if hookModel:FindFirstChild("Model") then
+        for _, part in ipairs(hookModel.Model:GetDescendants()) do
+            if part:IsA("MeshPart") then
+                removeESP(part)
+            end
+        end
+    end
+    if hookModel:FindFirstChild("Cartoony Blood Puddle") then
+        removeESP(hookModel["Cartoony Blood Puddle"])
+    end
+end
+
+local function createRoundedFrame(size, position, parent, withGlow, backgroundTransparency, backgroundColor, cornerRadius, zIndex)
+    local frame = Instance.new("Frame")
+    frame.Size = size or UDim2.new(1, 0, 0, 40)
+    frame.Position = position or UDim2.new(0, 0, 0, 0)
+    frame.Parent = parent
+    frame.BackgroundColor3 = backgroundColor or Color3.fromRGB(25, 25, 25)
+    frame.BackgroundTransparency = backgroundTransparency or 0.5
+    frame.BorderSizePixel = 0
+    if zIndex then frame.ZIndex = zIndex end
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = cornerRadius or CONFIG.Visual.CornerRadius
+    corner.Parent = frame
+    
+    if withGlow and state.enableGlow then
+        local stroke = Instance.new("UIStroke")
+        stroke.Color = CONFIG.Visual.GlowColor
+        stroke.Transparency = CONFIG.Visual.GlowTransparency
+        stroke.Thickness = CONFIG.Visual.GlowThickness * (withGlow.thicknessMultiplier or 1)
+        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        stroke.LineJoinMode = Enum.LineJoinMode.Round
+        stroke.Parent = frame
+        
+        frame:SetAttribute("HasGlow", true)
+    end
+    
+    return frame
+end
+
+local function updateGlowVisibility()
+    for _, frame in ipairs(mainGlowFrames) do
+        if frame and frame.Parent then
+            local stroke = frame:FindFirstChildOfClass("UIStroke")
+            if stroke then
+                stroke.Enabled = state.enableGlow
+            end
+        end
+    end
+end
+
+local function setupDynamicGlow()
+    if not state.enableGlow then return end
+    
+    local cycleDuration = 2.5
+    local minColor = Color3.fromRGB(150, 150, 150)
+    local maxColor = CONFIG.Visual.GlowColor
+    
+    local runningTask = task.spawn(function()
+        while task.wait(1/60) do
+            if not state.enableGlow then
+                task.wait(1)
+                continue
+            end
+            
+            local timeFactor = (tick() % cycleDuration) / cycleDuration
+            local progress = 0.5 * math.sin(timeFactor * math.pi * 2) + 0.5
+            local newColor = minColor:Lerp(maxColor, progress)
+            
+            for i = #mainGlowFrames, 1, -1 do
+                local frame = mainGlowFrames[i]
+                if frame and frame.Parent then
+                    local stroke = frame:FindFirstChildOfClass("UIStroke")
+                    if stroke then
+                        stroke.Color = newColor
+                    end
+                else
+                    table.remove(mainGlowFrames, i)
+                end
+            end
+        end
+    end)
+    
+    return runningTask
+end
+
+local function createUI()
+    local oldGui = PlayerGui:FindFirstChild("ESP_UI")
+    if oldGui then oldGui:Destroy() end
+    
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "ESP_UI"
+    screenGui.ResetOnSpawn = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = PlayerGui
+    
+    local frame = createRoundedFrame(
+        UDim2.new(0, 320, 0, 430),
+        UDim2.new(0.5, -160, 0.5, -215),
+        screenGui,
+        {thicknessMultiplier = 1.5},
+        0.2,
+        Color3.fromRGB(15, 15, 15)
+    )
+    table.insert(mainGlowFrames, frame)
+    frame.Name = "MainFrame"
+    frame.ClipsDescendants = true
+    
+    local titleBar = createRoundedFrame(
+        UDim2.new(1, 0, 0, 45),
+        UDim2.new(0, 0, 0, 0),
+        frame,
+        false,
+        0.6,
+        Color3.fromRGB(25, 25, 25),
+        UDim.new(0, 12)
+    )
+    titleBar.Name = "TitleBar"
+    
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, -80, 1, 0)
+    title.Position = UDim2.new(0, 15, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text = "made by ezrqq [VD]"
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 16
+    title.TextColor3 = Color3.fromRGB(255, 255, 255)
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Parent = titleBar
+    
+    local collapseBtnFrame = createRoundedFrame(
+        UDim2.new(0, 32, 0, 32),
+        UDim2.new(1, -40, 0.5, -16),
+        titleBar,
+        false,
+        0.5,
+        Color3.fromRGB(35, 35, 35),
+        UDim.new(0, 8)
+    )
+    
+    local collapseBtn = Instance.new("TextButton")
+    collapseBtn.Size = UDim2.new(1, 0, 1, 0)
+    collapseBtn.Text = "−"
+    collapseBtn.Font = Enum.Font.GothamBold
+    collapseBtn.TextSize = 24
+    collapseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    collapseBtn.BackgroundTransparency = 1
+    collapseBtn.AutoButtonColor = false
+    collapseBtn.Parent = collapseBtnFrame
+    
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name = "ScrollContent"
+    scrollFrame.Size = UDim2.new(1, 0, 1, -45)
+    scrollFrame.Position = UDim2.new(0, 0, 0, 45)
+    scrollFrame.BackgroundTransparency = 1
+    scrollFrame.BorderSizePixel = 0
+    scrollFrame.ScrollBarThickness = 6
+    scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 60)
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 500) -- ЯВНО ЗАДАННЫЙ РАЗМЕР
+    scrollFrame.Parent = frame
+    
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.Size = UDim2.new(1, 0, 0, 500) -- ЯВНО ЗАДАННЫЙ РАЗМЕР
+    content.BackgroundTransparency = 1
+    content.Parent = scrollFrame
+    
+    local contentPadding = Instance.new("UIPadding")
+    contentPadding.PaddingLeft = UDim.new(0, 15)
+    contentPadding.PaddingRight = UDim.new(0, 15)
+    contentPadding.PaddingTop = UDim.new(0, 15)
+    contentPadding.PaddingBottom = UDim.new(0, 15)
+    contentPadding.Parent = content
+    
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.Padding = UDim.new(0, 10)
+    contentLayout.Parent = content
+    
+    local isCollapsed = false
+    local originalSize = frame.Size
+    
+    collapseBtn.MouseButton1Click:Connect(function()
+        isCollapsed = not isCollapsed
+        if isCollapsed then
+            frame:TweenSize(UDim2.new(0, 320, 0, 45), Enum.EasingDirection.Out, Enum.EasingStyle.Quint, ANIM_DURATION, true)
+            collapseBtn.Text = "+"
+            scrollFrame.Visible = false
+        else
+            scrollFrame.Visible = true
+            frame:TweenSize(originalSize, Enum.EasingDirection.Out, Enum.EasingStyle.Quint, ANIM_DURATION, true)
+            collapseBtn.Text = "−"
+        end
+    end)
+    
+    local function makeToggle(name, defaultState, callback)
+        local toggleFrame = createRoundedFrame(
+            UDim2.new(1, 0, 0, 38),
+            nil,
+            content,
+            false,
+            0.5,
+            Color3.fromRGB(25, 25, 25),
+            UDim.new(0, 8)
+        )
+        
+        local toggleLabel = Instance.new("TextLabel")
+        toggleLabel.Size = UDim2.new(1, -60, 1, 0)
+        toggleLabel.Position = UDim2.new(0, 12, 0, 0)
+        toggleLabel.BackgroundTransparency = 1
+        toggleLabel.Text = name
+        toggleLabel.Font = Enum.Font.GothamSemibold
+        toggleLabel.TextSize = 14
+        toggleLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+        toggleLabel.TextXAlignment = Enum.TextXAlignment.Left
+        toggleLabel.Parent = toggleFrame
+        
+        local toggleButton = Instance.new("TextButton")
+        toggleButton.Size = UDim2.new(0, 48, 0, 24)
+        toggleButton.Position = UDim2.new(1, -56, 0.5, -12)
+        toggleButton.BackgroundColor3 = defaultState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 45, 45)
+        toggleButton.BorderSizePixel = 0
+        toggleButton.Text = " "
+        toggleButton.AutoButtonColor = false
+        toggleButton.Parent = toggleFrame
+        
+        local toggleBtnCorner = Instance.new("UICorner")
+        toggleBtnCorner.CornerRadius = UDim.new(1, 0)
+        toggleBtnCorner.Parent = toggleButton
+        
+        local toggleIndicator = Instance.new("Frame")
+        toggleIndicator.Size = UDim2.new(0, 18, 0, 18)
+        toggleIndicator.Position = defaultState and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        toggleIndicator.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+        toggleIndicator.BorderSizePixel = 0
+        toggleIndicator.Parent = toggleButton
+        
+        local indicatorCorner = Instance.new("UICorner")
+        indicatorCorner.CornerRadius = UDim.new(1, 0)
+        indicatorCorner.Parent = toggleIndicator
+        
+        local currentState = defaultState
+        toggleButton.MouseButton1Click:Connect(function()
+            currentState = not currentState
+            if currentState then
+                toggleButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+                toggleIndicator:TweenPosition(UDim2.new(1, -21, 0.5, -9), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
+            else
+                toggleButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+                toggleIndicator:TweenPosition(UDim2.new(0, 3, 0.5, -9), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.2, true)
+            end
+            callback(currentState)
+        end)
+        
+        return toggleFrame
+    end
+    
+    makeToggle("Killer ESP", Hook.Players["Killer"].On, function(v) Hook.Players["Killer"].On = v end)
+    makeToggle("Survivor ESP", Hook.Players["Survivor"].On, function(v) Hook.Players["Survivor"].On = v end)
+    makeToggle("Friends ESP", Hook.Players["Friends"].On, function(v) Hook.Players["Friends"].On = v end)
+    
+    makeToggle("Generator ESP", Hook.Objects["Generator"].On, function(v) Hook.Objects["Generator"].On = v end)
+    makeToggle("Gate ESP", Hook.Objects["Gate"].On, function(v) Hook.Objects["Gate"].On = v end)
+    makeToggle("Pallet ESP", Hook.Objects["Pallet"].On, function(v) Hook.Objects["Pallet"].On = v end)
+    makeToggle("Window ESP", Hook.Objects["Window"].On, function(v) Hook.Objects["Window"].On = v end)
+    makeToggle("Hook ESP", Hook.Objects["Hook"].On, function(v) Hook.Objects["Hook"].On = v end)
+    makeToggle("Pumpkin ESP", Hook.Objects["Pumpkin"].On, function(v) Hook.Objects["Pumpkin"].On = v end)
+    
+    makeToggle("Enable Glow Effects", state.enableGlow, function(v)
+        state.enableGlow = v
+        updateGlowVisibility()
+    end)
+
+    
+    local dragging = false
+    local dragStart = nil
+    local startPos = nil
+    
+    local dragInputConn, dragChangeConn, dragEndConn
+    
+    dragInputConn = titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+    table.insert(connections, dragInputConn)
+    
+    dragChangeConn = UserInputService.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    table.insert(connections, dragChangeConn)
+
+    dragEndConn = UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+    table.insert(connections, dragEndConn)
+    
+    local toggleMenuConn = UserInputService.InputBegan:Connect(function(input)
+        if input.KeyCode == Enum.KeyCode.M then
+            local scrollFrame = frame:FindFirstChild("ScrollContent")
+            if scrollFrame and scrollFrame:IsA("ScrollingFrame") then
+                if frame.Visible then
+                    menuScrollPosition = scrollFrame.CanvasPosition.Y
+                else
+                    scrollFrame.CanvasPosition = Vector2.new(0, menuScrollPosition)
+                end
+            end
+            frame.Visible = not frame.Visible
+        end
+    end)
+    table.insert(connections, toggleMenuConn)
+end
+
+local mapInstance = workspace:WaitForChild("Map", 30)
+
+local folder = {
+    ["Generator"] = mapInstance,
+    ["Gate"] = mapInstance,
+    ["Pallet"] = mapInstance,
+    ["Window"] = mapInstance,
+    ["Pumpkin"] = mapInstance and mapInstance:findFirstChild("Pumpkins"),
+    ["Hook"] = mapInstance
+}
+
+local objectCache = {
+    Generator = {},
+    Gate = {},
+    Pallet = {},
+    Window = {},
+    Hook = {},
+    Pumpkin = {}
+}
+
+local function refreshObjectCaches()
+    pcall(function()
+        local newCaches = {Generator = {}, Gate = {}, Pallet = {}, Window = {}, Hook = {}, Pumpkin = {}}
+        
+        for t, f in pairs(folder) do
+            if f and f:IsA("Instance") then
+                for _, obj in ipairs(f:GetDescendants()) do
+                    if t == "Hook" and obj.Name == "Hook" then
+                        table.insert(newCaches.Hook, obj)
+                    elseif obj.Name == (t == "Pallet" and "Palletwrong" or t) then
+                        if newCaches[t] then
+                            table.insert(newCaches[t], obj)
+                        end
+                    end
+                end
+            end
+        end
+        objectCache = newCaches
+    end)
+end
+
+runningTasks.cacheRefresh = task.spawn(function()
+    while task.wait(5) do
+        refreshObjectCaches()
+    end
+end)
+
+runningTasks.espUpdate = task.spawn(function()
+    while task.wait(0.25) do
+        
+        pcall(function()
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character and p.Team then
+                    
+                    local success, isFriend = pcall(function() return LocalPlayer:IsFriendsWith(p.UserId) end)
+                    
+                    if success and isFriend and Hook.Players["Friends"].On then
+                        ESP(p.Character, Hook.Players["Friends"].Color)
+                    elseif p.Team.Name == "Killer" then
+                        if Hook.Players["Killer"].On then
+                            ESP(p.Character, Hook.Players["Killer"].Color)
+                        else
+                            removeESP(p.Character)
+                        end
+                    elseif p.Team.Name == "Survivors" then
+                        if Hook.Players["Survivor"].On then
+                            ESP(p.Character, Hook.Players["Survivor"].Color)
+                        else
+                            removeESP(p.Character)
+                        end
+                    else
+                        removeESP(p.Character)
+                    end
+                elseif p.Character then
+                     removeESP(p.Character)
+                end
+            end
+        end)
+        
+        pcall(function()
+            for t, objectList in pairs(objectCache) do
+                local state = Hook.Objects[t].On
+                local color = Hook.Objects[t].Color
+                
+                for _, obj in ipairs(objectList) do
+                     if obj and obj.Parent then
+                        if t == "Hook" then
+                            if state then addHookESP(obj, color) else removeHookESP(obj) end
+                        else
+                            if state then ESP(obj, color) else removeESP(obj) end
+                        end
+                    end
+                end
+            end
+        end)
+    end
+end)
+
+local function cleanup()
+    
+    for _, taskThread in pairs(runningTasks) do
+        if type(taskThread) == "thread" then
+            task.cancel(taskThread)
+        end
+    end
+    runningTasks = {}
+    
+    for _, con in ipairs(connections) do
+        if con and con.Disconnect then
+            con:Disconnect()
+        end
+    end
+    connections = {}
+    
+    local oldGui = PlayerGui:FindFirstChild("ESP_UI")
+    if oldGui then oldGui:Destroy() end
+    
+end
+
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then
+        cleanup()
+    end
+end))
+
+task.defer(createUI)
+runningTasks.dynamicGlow = setupDynamicGlow()
+
+refreshObjectCaches()
