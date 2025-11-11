@@ -43,11 +43,15 @@ local state = {
 local mainGlowFrames = {}
 setmetatable(mainGlowFrames, {__mode = "v"})
 
+local espObjects = setmetatable({}, {__mode = "kv"})
+
 local runningTasks = {}
 local connections = {}
 local menuScrollPosition = 0
+local lastCacheRefresh = 0
 
 local function ESP(obj, color)
+    if not obj or not obj.Parent then return end
     if obj:FindFirstChild("H") then return end
     local h = Instance.new("Highlight")
     h.Name = "H"
@@ -57,40 +61,71 @@ local function ESP(obj, color)
     h.FillTransparency = 0.9
     h.OutlineTransparency = 0
     h.Parent = obj
+    
+    espObjects[obj] = h
+    
+    if not obj:FindFirstChild("_ESPTracker") then
+        local tracker = Instance.new("BoolValue")
+        tracker.Name = "_ESPTracker"
+        tracker.Parent = obj
+        
+        tracker.AncestryChanged:Connect(function(child, parent)
+            if parent == nil then
+                local highlight = espObjects[obj]
+                if highlight then
+                    pcall(function() highlight:Destroy() end)
+                    espObjects[obj] = nil
+                end
+            end
+        end)
+    end
 end
 
 local function removeESP(obj)
     if not obj then return end
     local h = obj:FindFirstChild("H")
     if h then
-        h:Destroy()
+        pcall(function() h:Destroy() end)
     end
+    espObjects[obj] = nil
 end
 
 local function addHookESP(hookModel, color)
-    if hookModel:FindFirstChild("Model") then
-        for _, part in ipairs(hookModel.Model:GetDescendants()) do
-            if part:IsA("MeshPart") then
-                ESP(part, color)
+    if not hookModel or not hookModel.Parent then return end
+    
+    pcall(function()
+        if hookModel:FindFirstChild("Model") then
+            for _, part in ipairs(hookModel.Model:GetDescendants()) do
+                if part:IsA("MeshPart") and part.Parent then
+                    ESP(part, color)
+                end
             end
         end
-    end
-    if hookModel:FindFirstChild("Cartoony Blood Puddle") then
-        ESP(hookModel["Cartoony Blood Puddle"], color)
-    end
+        
+        local bloodPuddle = hookModel:FindFirstChild("Cartoony Blood Puddle")
+        if bloodPuddle and bloodPuddle.Parent then
+            ESP(bloodPuddle, color)
+        end
+    end)
 end
 
 local function removeHookESP(hookModel)
-     if hookModel:FindFirstChild("Model") then
-        for _, part in ipairs(hookModel.Model:GetDescendants()) do
-            if part:IsA("MeshPart") then
-                removeESP(part)
+    if not hookModel or not hookModel.Parent then return end
+    
+    pcall(function()
+        if hookModel:FindFirstChild("Model") then
+            for _, part in ipairs(hookModel.Model:GetDescendants()) do
+                if part:IsA("MeshPart") then
+                    removeESP(part)
+                end
             end
         end
-    end
-    if hookModel:FindFirstChild("Cartoony Blood Puddle") then
-        removeESP(hookModel["Cartoony Blood Puddle"])
-    end
+        
+        local bloodPuddle = hookModel:FindFirstChild("Cartoony Blood Puddle")
+        if bloodPuddle then
+            removeESP(bloodPuddle)
+        end
+    end)
 end
 
 local function createRoundedFrame(size, position, parent, withGlow, backgroundTransparency, backgroundColor, cornerRadius, zIndex)
@@ -129,6 +164,14 @@ local function updateGlowVisibility()
             if stroke then
                 stroke.Enabled = state.enableGlow
             end
+        end
+    end
+end
+
+local function cleanupDeadFrames()
+    for i = #mainGlowFrames, 1, -1 do
+        if not mainGlowFrames[i] or not mainGlowFrames[i].Parent then
+            table.remove(mainGlowFrames, i)
         end
     end
 end
@@ -240,12 +283,12 @@ local function createUI()
     scrollFrame.BorderSizePixel = 0
     scrollFrame.ScrollBarThickness = 6
     scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(60, 60, 60)
-    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 500) -- ЯВНО ЗАДАННЫЙ РАЗМЕР
+    scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 500)
     scrollFrame.Parent = frame
     
     local content = Instance.new("Frame")
     content.Name = "Content"
-    content.Size = UDim2.new(1, 0, 0, 500) -- ЯВНО ЗАДАННЫЙ РАЗМЕР
+    content.Size = UDim2.new(1, 0, 0, 500)
     content.BackgroundTransparency = 1
     content.Parent = scrollFrame
     
@@ -409,7 +452,7 @@ local folder = {
     ["Gate"] = mapInstance,
     ["Pallet"] = mapInstance,
     ["Window"] = mapInstance,
-    ["Pumpkin"] = mapInstance and mapInstance:findFirstChild("Pumpkins"),
+    ["Pumpkin"] = mapInstance and mapInstance:FindFirstChild("Pumpkins"),
     ["Hook"] = mapInstance
 }
 
@@ -423,18 +466,24 @@ local objectCache = {
 }
 
 local function refreshObjectCaches()
+    local now = tick()
+    if now - lastCacheRefresh < 2 then return end
+    lastCacheRefresh = now
+    
     pcall(function()
         local newCaches = {Generator = {}, Gate = {}, Pallet = {}, Window = {}, Hook = {}, Pumpkin = {}}
         
         for t, f in pairs(folder) do
-            if f and f:IsA("Instance") then
+            if f and f:IsA("Instance") and f.Parent then
                 for _, obj in ipairs(f:GetDescendants()) do
+                    if not obj.Parent then continue end
+                    
                     if t == "Hook" and obj.Name == "Hook" then
                         table.insert(newCaches.Hook, obj)
-                    elseif obj.Name == (t == "Pallet" and "Palletwrong" or t) then
-                        if newCaches[t] then
-                            table.insert(newCaches[t], obj)
-                        end
+                    elseif t == "Pallet" and obj.Name == "Palletwrong" then
+                        table.insert(newCaches.Pallet, obj)
+                    elseif obj.Name == t then
+                        table.insert(newCaches[t], obj)
                     end
                 end
             end
@@ -446,6 +495,17 @@ end
 runningTasks.cacheRefresh = task.spawn(function()
     while task.wait(5) do
         refreshObjectCaches()
+    end
+end)
+
+runningTasks.cleanupTask = task.spawn(function()
+    while task.wait(10) do
+        cleanupDeadFrames()
+        for obj, highlight in pairs(espObjects) do
+            if not obj or not obj.Parent or not highlight or not highlight.Parent then
+                espObjects[obj] = nil
+            end
+        end
     end
 end)
 
@@ -515,6 +575,13 @@ local function cleanup()
         end
     end
     connections = {}
+    
+    for obj, highlight in pairs(espObjects) do
+        if highlight then
+            pcall(function() highlight:Destroy() end)
+        end
+    end
+    espObjects = setmetatable({}, {__mode = "kv"})
     
     local oldGui = PlayerGui:FindFirstChild("ESP_UI")
     if oldGui then oldGui:Destroy() end
