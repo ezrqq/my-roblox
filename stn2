@@ -1,0 +1,1241 @@
+--[[ SERVICES ]]
+local Players         = game:GetService("Players")
+local Workspace       = game:GetService("Workspace")
+local UserInputService= game:GetService("UserInputService")
+local Lighting        = game:GetService("Lighting")
+local TweenService    = game:GetService("TweenService")
+
+--[[ LOCALS ]]
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+
+--[[ CONSTANTS ]]
+local COLLAPSED_TRANS = 0.6
+local ANIM_DURATION   = 0.7
+
+local CONFIG = {
+    FilmsFolder     = {"TempMap", "Main", "Films"},
+    CoinsFolder     = {"TempMap", "Main", "Coins"},
+    MedkitsFolder   = {"TempMap", "Main", "Medkits"},
+    ChainsawsFolder = {"TempMap", "Main", "Chainsaws"},
+    EscapesFolder   = {"TempMap", "Main", "Escapes"},
+    BatterysFolder  = {"TempMap", "Main", "Batterys"},
+    BandagesFolder  = {"TempMap", "Main", "Bandages"},
+
+    ItemColors = {
+        Film     = Color3.fromRGB(255, 255, 255),
+        Coin     = Color3.fromRGB(255, 215, 0),
+        Medkit   = Color3.fromRGB(0, 255, 127),
+        Chainsaw = Color3.fromRGB(255, 69, 0),
+        Escape   = Color3.fromRGB(135, 206, 250),
+        Battery  = Color3.fromRGB(255, 140, 0),
+        Bandage  = Color3.fromRGB(219, 112, 147),
+    },
+
+    PlayerColors = {
+        Survivor            = Color3.fromRGB(50, 205, 50),
+        Slasher             = Color3.fromRGB(255, 48, 48),
+        SlasherWithChainsaw = Color3.fromRGB(128, 0, 128),
+    },
+
+    OutlineThickness    = 0.05,
+    OutlineSurfaceTrans = 1,
+
+    Visual = {
+        CornerRadius     = UDim.new(0, 10),
+        GlowColor        = Color3.fromRGB(255, 255, 255),
+        GlowThickness    = 1.5,
+        GlowTransparency = 0.7,
+    },
+
+    Performance = {
+        ESPUpdateInterval      = 0.1,
+        FriendsRefreshInterval = 10,
+        MaxESPDistance         = 500,
+    },
+}
+
+-- Pre-cached Color3 constants (no allocations per frame)
+local COLOR_DIST_CLOSE  = Color3.fromRGB(255, 0, 0)
+local COLOR_DIST_MID    = Color3.fromRGB(255, 255, 0)
+local COLOR_DIST_FAR    = Color3.fromRGB(0, 255, 0)
+local COLOR_FRIEND      = Color3.fromRGB(0, 200, 255)
+
+local ITEM_SETTINGS = {
+    {stateKey = "showCoins",     folderPath = CONFIG.CoinsFolder,     type = "Coin",     color = CONFIG.ItemColors.Coin},
+    {stateKey = "showFilms",     folderPath = CONFIG.FilmsFolder,     type = "Film",     color = CONFIG.ItemColors.Film},
+    {stateKey = "showMedkits",   folderPath = CONFIG.MedkitsFolder,   type = "Medkit",   color = CONFIG.ItemColors.Medkit},
+    {stateKey = "showChainsaws", folderPath = CONFIG.ChainsawsFolder, type = "Chainsaw", color = CONFIG.ItemColors.Chainsaw},
+    {stateKey = "showEscapes",   folderPath = CONFIG.EscapesFolder,   type = "Escape",   color = CONFIG.ItemColors.Escape},
+    {stateKey = "showBatterys",  folderPath = CONFIG.BatterysFolder,  type = "Battery",  color = CONFIG.ItemColors.Battery},
+    {stateKey = "showBandages",  folderPath = CONFIG.BandagesFolder,  type = "Bandage",  color = CONFIG.ItemColors.Bandage},
+}
+
+--[[ STATE ]]
+local state = {
+    showFilms          = false,
+    showCoins          = false,
+    showMedkits        = true,
+    showChainsaws      = true,
+    showEscapes        = true,
+    showBatterys       = true,
+    showBandages       = true,
+    showSurvivors      = false,
+    showSlasher        = true,
+    showFriends        = true,
+    fullbright         = true,
+    autoPickup         = false,
+    showStatsUI        = true,
+    fullbrightEnhanced = true,
+    disableBloom       = true,
+    disableBlur        = true,
+    removeGenophage    = true,
+    enableGlow         = true,
+}
+
+--[[ TABLES ]]
+-- espHandles[obj] = { gui, outline, espLabel, type, adornee, playerName, stats?, prompt? }
+local espHandles            = setmetatable({}, {__mode = "k"})
+local friendsCache          = setmetatable({}, {__mode = "kv"})
+local connections           = {}
+local runningTasks          = {}
+local pickupTask            = nil   -- thread, tracked separately from connections
+local lastPickupTime        = 0
+local pickedUpPrompts       = setmetatable({}, {__mode = "k"})
+local monitoredFolders      = {}
+local itemPromptConnections = setmetatable({}, {__mode = "k"})
+local mainGlowFrames        = setmetatable({}, {__mode = "v"})
+
+--[[ TRACKING ]]
+local statsUI              = nil
+local itemCounts           = {coins = 0, films = 0, medkits = 0, batterys = 0, bandages = 0}
+local menuScrollPosition   = 0
+local slasherSortType      = "N/A"
+local slasherChainsawCount = "N/A"
+local isUpdatingESP        = false
+
+--[[ ORIGINAL LIGHTING ]]
+local originalLighting = {
+    Brightness        = Lighting.Brightness,
+    FogEnd            = Lighting.FogEnd,
+    GlobalShadows     = Lighting.GlobalShadows,
+    Technology        = Lighting.Technology,
+    AtmosphereDensity = Lighting.Atmosphere and Lighting.Atmosphere.Density or 0,
+    BloomEnabled      = Lighting:FindFirstChild("DefaultBloom") and Lighting.DefaultBloom.Enabled or false,
+    BlurEnabled       = Lighting:FindFirstChild("DefaultBlur") and Lighting.DefaultBlur.Enabled or false,
+    EnvDiffuse        = Lighting.EnvironmentDiffuseScale,
+    EnvSpecular       = Lighting.EnvironmentSpecularScale,
+    ClockTime         = Lighting.ClockTime,
+    Ambient           = Lighting.Ambient,
+    OutdoorAmbient    = Lighting.OutdoorAmbient,
+}
+do
+    local cc = Lighting:FindFirstChild("GenophageColorCorrection")
+    if cc then
+        originalLighting.GenophageEnabled    = cc.Enabled
+        originalLighting.GenophageBrightness = cc.Brightness
+    else
+        originalLighting.GenophageEnabled    = true
+        originalLighting.GenophageBrightness = -2
+    end
+end
+
+--[[ UTILITY ]]
+local function safeCall(func, context)
+    local ok, err = pcall(func)
+    if not ok then
+        warn(string.format("[STN] Error in %s: %s", context or "unknown", tostring(err)))
+    end
+    return ok
+end
+
+local function findInPath(root, path)
+    if not path then return nil end
+    local obj = root
+    for _, name in ipairs(path) do
+        if not obj then return nil end
+        obj = obj:FindFirstChild(name)
+    end
+    return obj
+end
+
+local function findAdornee(obj)
+    if not obj then return nil end
+    if obj:IsA("BasePart") then return obj end
+    if obj:IsA("Model") then
+        if obj.PrimaryPart then return obj.PrimaryPart end
+        local hrp = obj:FindFirstChild("HumanoidRootPart")
+        if hrp then return hrp end
+    end
+    for _, child in ipairs(obj:GetDescendants()) do
+        if child:IsA("BasePart") then return child end
+    end
+    return nil
+end
+
+local function findStats(model)
+    if not model then return nil end
+    local stats = model:FindFirstChild("Stats")
+    if stats then return stats end
+    local kit = model:FindFirstChild("Kit")
+    if kit then return kit:FindFirstChild("Stats") end
+    return nil
+end
+
+--[[ ESP ]]
+local function removeESP(obj)
+    if not obj then return false end
+    local info = espHandles[obj]
+    if not info then return false end
+    safeCall(function()
+        if info.gui     and info.gui.Parent     then info.gui:Destroy()     end
+        if info.outline and info.outline.Parent then info.outline:Destroy() end
+    end, "removeESP")
+    espHandles[obj] = nil
+    return true
+end
+
+local function clearAllESP()
+    local keys = {}
+    for obj in pairs(espHandles) do keys[#keys + 1] = obj end
+    for _, obj in ipairs(keys) do removeESP(obj) end
+end
+
+-- FIX: SelectionBox parented to obj (not Workspace) - auto-destroyed with obj,
+--      eliminates all potential leaks when weak key is GC'd before connections fire.
+-- FIX: espLabel and stats cached in handle - eliminates FindFirstChild calls in hot loop.
+-- FIX: prompt cached in handle - eliminates FindFirstChildWhichIsA in auto-pickup loop.
+local function createESP(obj, text, color, itemType, isPlayer, cachedPrompt)
+    if not obj or espHandles[obj] then return end
+    local adornee = findAdornee(obj)
+    if not adornee then return end
+
+    local ok = safeCall(function()
+        local gui = Instance.new("BillboardGui")
+        gui.Name           = "ESP_Label"
+        gui.Adornee        = adornee
+        gui.Size           = UDim2.new(0, 120, 0, 20)
+        gui.AlwaysOnTop    = true
+        gui.LightInfluence = 0
+        gui.StudsOffset    = Vector3.new(0, isPlayer and 3.5 or 2.5, 0)
+        gui.ResetOnSpawn   = false
+        gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+        gui.Parent         = obj
+
+        local label = Instance.new("TextLabel")
+        label.Name                 = "ESP_Text"
+        label.Size                 = UDim2.new(1, 0, 1, 0)
+        label.BackgroundTransparency = 1
+        label.Text                 = text
+        label.TextScaled           = true
+        label.Font                 = Enum.Font.GothamBold
+        label.TextColor3           = color
+        label.TextStrokeTransparency = 0.5
+        label.Parent               = gui
+
+        local outline = Instance.new("SelectionBox")
+        outline.Name               = "ESP_Outline"
+        outline.Adornee            = obj:IsA("Model") and obj or adornee
+        outline.Color3             = color
+        outline.LineThickness      = CONFIG.OutlineThickness
+        outline.SurfaceTransparency = CONFIG.OutlineSurfaceTrans
+        outline.SurfaceColor3      = color
+        outline.Parent             = obj  -- parented to obj so destroyed with it
+
+        local playerName = nil
+        if itemType == "Slasher" then
+            playerName = text:match("^(.-)%s*%[Slasher%]")
+        elseif itemType == "Survivor" then
+            playerName = text:match("^(.-)%s*%[Survivor%]")
+        elseif itemType == "Friend" then
+            playerName = text:match("^Friend%s+(.*)")
+        end
+
+        espHandles[obj] = {
+            gui        = gui,
+            outline    = outline,
+            espLabel   = label,        -- cached, no FindFirstChild in loop
+            type       = itemType or "Unknown",
+            adornee    = adornee,
+            playerName = playerName,
+            stats      = findStats(obj), -- cached for slasher update loop
+            prompt     = cachedPrompt,  -- cached for auto-pickup loop
+        }
+    end, "createESP")
+
+    return ok
+end
+
+--[[ PROMPT MONITORING ]]
+local function isPromptEnabled(prompt)
+    return prompt ~= nil and prompt.Enabled
+end
+
+local function monitorPrompt(obj, prompt)
+    if not obj or not prompt then return end
+    local old = itemPromptConnections[obj]
+    if old then old:Disconnect() end
+    local con = prompt:GetPropertyChangedSignal("Enabled"):Connect(function()
+        if not isPromptEnabled(prompt) then removeESP(obj) end
+    end)
+    itemPromptConnections[obj] = con
+    if not isPromptEnabled(prompt) then removeESP(obj) end
+end
+
+local function stopMonitoringPrompt(obj)
+    local con = itemPromptConnections[obj]
+    if con then
+        con:Disconnect()
+        itemPromptConnections[obj] = nil
+    end
+end
+
+--[[ PLAYER TRACKING ]]
+local function isFriendOfLocal(plr)
+    return plr ~= nil and friendsCache[plr.UserId] == true
+end
+
+local function getPlayerTeamColor(player)
+    if not player or not player.Character then return nil end
+    local kit = player.Character:FindFirstChild("Kit")
+    if not kit then return nil end
+    local stats = kit:FindFirstChild("Stats")
+    if not stats then return nil end
+    local teamColor = stats:FindFirstChild("TeamColor")
+    return teamColor and teamColor.Value
+end
+
+-- FIX: Added retry mechanism for when Kit/Stats haven't replicated yet.
+local function updateCharacterESP(model)
+    safeCall(function()
+        if not model or model == LocalPlayer.Character then
+            removeESP(model)
+            return
+        end
+        local player = Players:GetPlayerFromCharacter(model)
+        if not player then removeESP(model) return end
+
+        local isFriend = isFriendOfLocal(player)
+        local stats    = findStats(model)
+
+        if stats then
+            local typ = stats:FindFirstChild("Type")
+            if typ and typ:IsA("StringValue") then
+                if typ.Value:lower() == "slasher" then
+                    if state.showSlasher then
+                        createESP(model, player.Name .. " [Slasher]", CONFIG.PlayerColors.Slasher, "Slasher", true)
+                    else
+                        removeESP(model)
+                    end
+                    return
+                end
+            end
+        end
+
+        local teamColor = getPlayerTeamColor(player)
+        if not teamColor then
+            removeESP(model)
+            return
+        end
+
+        local r, g, b   = teamColor.R, teamColor.G, teamColor.B
+        local isSurvivor = r < 0.1 and g > 0.9 and b < 0.1
+
+        if isFriend and state.showFriends then
+            createESP(model, "Friend " .. player.Name, COLOR_FRIEND, "Friend", true)
+        elseif isSurvivor and state.showSurvivors and not isFriend then
+            createESP(model, player.Name .. " [Survivor]", CONFIG.PlayerColors.Survivor, "Survivor", true)
+        else
+            removeESP(model)
+        end
+    end, "updateCharacterESP")
+end
+
+--[[ FOLDER MONITORING ]]
+local function disconnectMonitors()
+    for _, con in pairs(monitoredFolders) do
+        if con and con.Disconnect then con:Disconnect() end
+    end
+    monitoredFolders = {}
+    for _, con in pairs(itemPromptConnections) do
+        if con and con.Disconnect then con:Disconnect() end
+    end
+    itemPromptConnections = setmetatable({}, {__mode = "k"})
+end
+
+local function setupMonitor(folder, itemType, color)
+    if not folder then return end
+
+    local function handleChild(child)
+        if not child then return end
+        local prompt = child:FindFirstChildWhichIsA("ProximityPrompt", true)
+        if prompt then monitorPrompt(child, prompt) end
+        -- Pass cached prompt to createESP so auto-pickup doesn't search again
+        createESP(child, itemType, color, itemType, false, prompt)
+        local con = child.AncestryChanged:Connect(function(_, newParent)
+            if not newParent then
+                removeESP(child)
+                stopMonitoringPrompt(child)
+            end
+        end)
+        table.insert(connections, con)
+    end
+
+    for _, child in ipairs(folder:GetChildren()) do handleChild(child) end
+
+    local addedCon   = folder.ChildAdded:Connect(handleChild)
+    local removedCon = folder.ChildRemoved:Connect(function(child)
+        removeESP(child)
+        stopMonitoringPrompt(child)
+    end)
+
+    table.insert(monitoredFolders, addedCon)
+    table.insert(monitoredFolders, removedCon)
+    table.insert(connections, addedCon)
+    table.insert(connections, removedCon)
+end
+
+local function detectAndSetupMonitors()
+    disconnectMonitors()
+    for _, itemData in ipairs(ITEM_SETTINGS) do
+        if state[itemData.stateKey] then
+            local folder = findInPath(Workspace, itemData.folderPath)
+            if folder then
+                setupMonitor(folder, itemData.type, itemData.color)
+            end
+        end
+    end
+end
+
+local function updateAllESP()
+    if isUpdatingESP then return end
+    isUpdatingESP = true
+    safeCall(function()
+        clearAllESP()
+        detectAndSetupMonitors()
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character then
+                updateCharacterESP(player.Character)
+            end
+        end
+    end, "updateAllESP")
+    isUpdatingESP = false
+end
+
+--[[ ROUND DETECTION ]]
+local function watchForNewRounds()
+    local function checkForTempMap()
+        if Workspace:FindFirstChild("TempMap") then
+            task.delay(0.8, updateAllESP)
+        end
+    end
+    table.insert(connections, Workspace.ChildAdded:Connect(function(child)
+        if child.Name == "TempMap" then checkForTempMap() end
+    end))
+    checkForTempMap()
+end
+
+--[[ FRIENDS CACHE ]]
+local function refreshFriends()
+    friendsCache = setmetatable({}, {__mode = "kv"})
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer then
+            safeCall(function()
+                if LocalPlayer:IsFriendsWith(player.UserId) then
+                    friendsCache[player.UserId] = true
+                end
+            end, "refreshFriends")
+        end
+    end
+end
+
+--[[ LIGHTING ]]
+local function applyFullbright()
+    safeCall(function()
+        if state.fullbright then
+            Lighting.Brightness              = 2
+            Lighting.FogEnd                  = 1e9
+            Lighting.GlobalShadows           = false
+            Lighting.Technology              = Enum.Technology.ShadowMap
+            Lighting.EnvironmentDiffuseScale = 1
+            Lighting.EnvironmentSpecularScale= 1
+        else
+            Lighting.Brightness              = originalLighting.Brightness
+            Lighting.FogEnd                  = originalLighting.FogEnd
+            Lighting.GlobalShadows           = originalLighting.GlobalShadows
+            Lighting.Technology              = originalLighting.Technology
+            Lighting.EnvironmentDiffuseScale = originalLighting.EnvDiffuse
+            Lighting.EnvironmentSpecularScale= originalLighting.EnvSpecular
+        end
+    end, "applyFullbright")
+end
+
+local function setupFullbrightProtection()
+    local function reapply()
+        if state.fullbright then applyFullbright() end
+    end
+    table.insert(connections, Lighting:GetPropertyChangedSignal("Brightness"):Connect(reapply))
+    table.insert(connections, Lighting:GetPropertyChangedSignal("FogEnd"):Connect(reapply))
+    table.insert(connections, Lighting:GetPropertyChangedSignal("GlobalShadows"):Connect(reapply))
+    table.insert(connections, Lighting:GetPropertyChangedSignal("Technology"):Connect(reapply))
+end
+
+local function applyEnhancedFullbright()
+    safeCall(function()
+        if Lighting.Atmosphere then
+            Lighting.Atmosphere.Density = state.fullbrightEnhanced and 0 or originalLighting.AtmosphereDensity
+        end
+        if state.fullbrightEnhanced then
+            Lighting.ClockTime     = 14
+            Lighting.Ambient       = Color3.fromRGB(200, 200, 200)
+            Lighting.OutdoorAmbient= Color3.fromRGB(200, 200, 200)
+        else
+            Lighting.ClockTime     = originalLighting.ClockTime
+            Lighting.Ambient       = originalLighting.Ambient
+            Lighting.OutdoorAmbient= originalLighting.OutdoorAmbient
+        end
+        local bloom = Lighting:FindFirstChild("DefaultBloom")
+        if bloom then bloom.Enabled = not state.disableBloom end
+        local blur  = Lighting:FindFirstChild("DefaultBlur")
+        if blur  then blur.Enabled  = not state.disableBlur  end
+    end, "applyEnhancedFullbright")
+end
+
+local function setupEnhancedFullbrightProtection()
+    local function reapply()
+        if state.fullbrightEnhanced then applyEnhancedFullbright() end
+    end
+    if Lighting.Atmosphere then
+        table.insert(connections, Lighting.Atmosphere:GetPropertyChangedSignal("Density"):Connect(reapply))
+    end
+    table.insert(connections, Lighting:GetPropertyChangedSignal("ClockTime"):Connect(reapply))
+end
+
+local function applyGenophageRemoval()
+    safeCall(function()
+        local cc = Lighting:FindFirstChild("GenophageColorCorrection")
+        if not cc then return end
+        if state.removeGenophage then
+            cc.Enabled    = false
+            cc.Brightness = 0
+        else
+            cc.Enabled    = originalLighting.GenophageEnabled
+            cc.Brightness = originalLighting.GenophageBrightness
+        end
+    end, "applyGenophageRemoval")
+end
+
+-- FIX: ChildAdded connection disconnects itself once the target is found (no leak).
+local function setupGenophageProtection()
+    local function reapply()
+        if state.removeGenophage then applyGenophageRemoval() end
+    end
+    local cc = Lighting:FindFirstChild("GenophageColorCorrection")
+    if cc then
+        table.insert(connections, cc:GetPropertyChangedSignal("Enabled"):Connect(reapply))
+        table.insert(connections, cc:GetPropertyChangedSignal("Brightness"):Connect(reapply))
+    else
+        local scanCon
+        scanCon = Lighting.ChildAdded:Connect(function(child)
+            if child.Name == "GenophageColorCorrection" then
+                scanCon:Disconnect()  -- stop scanning, target found
+                originalLighting.GenophageEnabled    = child.Enabled
+                originalLighting.GenophageBrightness = child.Brightness
+                table.insert(connections, child:GetPropertyChangedSignal("Enabled"):Connect(reapply))
+                table.insert(connections, child:GetPropertyChangedSignal("Brightness"):Connect(reapply))
+                reapply()
+            end
+        end)
+        table.insert(connections, scanCon)
+    end
+end
+
+--[[ AUTO PICKUP ]]
+-- FIX: pickupTask tracked as a standalone thread, NOT inserted into connections,
+--      preventing stale cancelled-task entries accumulating on every toggle.
+local function stopPickup()
+    if pickupTask then
+        task.cancel(pickupTask)
+        pickupTask = nil
+    end
+end
+
+local function setupAutoPickup()
+    stopPickup()
+    pickedUpPrompts = setmetatable({}, {__mode = "k"})
+    if not state.autoPickup then return end
+
+    local function triggerNearbyPrompts()
+        local now = tick()
+        if now - lastPickupTime < 0.1 then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        local hrpPos = hrp.Position
+        local best, bestDist = nil, math.huge
+
+        for obj, info in pairs(espHandles) do
+            if (info.type == "Film" and state.showFilms) or (info.type == "Coin" and state.showCoins) then
+                if info.adornee and info.adornee.Parent then
+                    -- FIX: use cached prompt from espHandles, no traversal needed
+                    local prompt = info.prompt
+                    if prompt and prompt.Parent and prompt.Enabled and not pickedUpPrompts[prompt] then
+                        local dist = (info.adornee.Position - hrpPos).Magnitude
+                        if dist < 100 and dist < bestDist then
+                            bestDist = dist
+                            best     = prompt
+                        end
+                    end
+                end
+            end
+        end
+
+        if best then
+            lastPickupTime = now
+            pickedUpPrompts[best] = true
+            task.spawn(function()
+                safeCall(function()
+                    if best and best.Parent then
+                        local dur = best.HoldDuration
+                        best:InputHoldBegin()
+                        task.wait(dur > 0 and dur or 0.1)
+                        best:InputHoldEnd()
+                    end
+                end, "autoPickup")
+                pickedUpPrompts[best] = nil
+            end)
+        end
+    end
+
+    pickupTask = task.spawn(function()
+        while task.wait(0.05) do
+            if not state.autoPickup then break end
+            safeCall(triggerNearbyPrompts, "pickupLoop")
+        end
+        pickupTask = nil
+    end)
+end
+
+--[[ UI HELPERS ]]
+local TWEEN_FAST = TweenInfo.new(0.2, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out)
+local TWEEN_SLOW = TweenInfo.new(ANIM_DURATION, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
+local function createRoundedFrame(size, position, parent, withGlow, bgTrans, bgColor, cornerRadius, zIndex)
+    local frame = Instance.new("Frame")
+    frame.Size                 = size or UDim2.new(1, 0, 0, 40)
+    frame.Position             = position or UDim2.new(0, 0, 0, 0)
+    frame.BackgroundColor3     = bgColor or Color3.fromRGB(25, 25, 25)
+    frame.BackgroundTransparency = bgTrans or 0.5
+    frame.BorderSizePixel      = 0
+    if zIndex then frame.ZIndex = zIndex end
+    frame.Parent               = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = cornerRadius or CONFIG.Visual.CornerRadius
+    corner.Parent       = frame
+
+    local glowCfg = type(withGlow) == "table" and withGlow or nil
+    if glowCfg and state.enableGlow then
+        local stroke = Instance.new("UIStroke")
+        stroke.Color           = CONFIG.Visual.GlowColor
+        stroke.Transparency    = CONFIG.Visual.GlowTransparency
+        stroke.Thickness       = CONFIG.Visual.GlowThickness * (glowCfg.thicknessMultiplier or 1)
+        stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        stroke.LineJoinMode    = Enum.LineJoinMode.Round
+        stroke.Parent          = frame
+        frame:SetAttribute("HasGlow", true)
+    end
+
+    return frame
+end
+
+local function updateGlowVisibility()
+    for _, frame in ipairs(mainGlowFrames) do
+        if frame and frame.Parent then
+            local stroke = frame:FindFirstChildOfClass("UIStroke")
+            if stroke then stroke.Enabled = state.enableGlow end
+        end
+    end
+end
+
+local function setupDynamicGlow()
+    if not state.enableGlow then return nil end
+
+    local cycle    = 2.5
+    local minColor = Color3.fromRGB(150, 150, 150)
+    local maxColor = CONFIG.Visual.GlowColor
+
+    return task.spawn(function()
+        while task.wait(1/60) do
+            if not state.enableGlow then
+                task.wait(1)
+                continue
+            end
+            local t        = (tick() % cycle) / cycle
+            local progress = 0.5 * math.sin(t * math.pi * 2) + 0.5
+            local newColor = minColor:Lerp(maxColor, progress)
+
+            for i = #mainGlowFrames, 1, -1 do
+                local frame = mainGlowFrames[i]
+                if frame and frame.Parent then
+                    local stroke = frame:FindFirstChildOfClass("UIStroke")
+                    if stroke then stroke.Color = newColor end
+                else
+                    table.remove(mainGlowFrames, i)
+                end
+            end
+        end
+    end)
+end
+
+--[[ UI ]]
+local function createUI()
+    local oldGui = PlayerGui:FindFirstChild("ESP_UI")
+    if oldGui then oldGui:Destroy() end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name           = "ESP_UI"
+    screenGui.ResetOnSpawn   = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.IgnoreGuiInset = true
+    screenGui.Parent         = PlayerGui
+
+    local frame = createRoundedFrame(
+        UDim2.new(0, 320, 0, 430),
+        UDim2.new(0.5, -160, 0.5, -215),
+        screenGui,
+        {thicknessMultiplier = 1.5},
+        0.2,
+        Color3.fromRGB(15, 15, 15)
+    )
+    table.insert(mainGlowFrames, frame)
+    frame.Name             = "MainFrame"
+    frame.ClipsDescendants = true
+
+    local titleBar = createRoundedFrame(
+        UDim2.new(1, 0, 0, 45), UDim2.new(0, 0, 0, 0),
+        frame, false, COLLAPSED_TRANS, Color3.fromRGB(25, 25, 25), UDim.new(0, 12)
+    )
+    titleBar.Name = "TitleBar"
+
+    local title = Instance.new("TextLabel")
+    title.Size               = UDim2.new(1, -80, 1, 0)
+    title.Position           = UDim2.new(0, 15, 0, 0)
+    title.BackgroundTransparency = 1
+    title.Text               = "made by ezrqq v1.6 BETA | 0.9.2"
+    title.Font               = Enum.Font.GothamBold
+    title.TextSize           = 16
+    title.TextColor3         = Color3.fromRGB(255, 255, 255)
+    title.TextXAlignment     = Enum.TextXAlignment.Left
+    title.Parent             = titleBar
+
+    local collapseBtnFrame = createRoundedFrame(
+        UDim2.new(0, 32, 0, 32), UDim2.new(1, -40, 0.5, -16),
+        titleBar, false, 0.5, Color3.fromRGB(35, 35, 35), UDim.new(0, 8)
+    )
+
+    local collapseBtn = Instance.new("TextButton")
+    collapseBtn.Size                 = UDim2.new(1, 0, 1, 0)
+    collapseBtn.Text                 = "−"
+    collapseBtn.Font                 = Enum.Font.GothamBold
+    collapseBtn.TextSize             = 24
+    collapseBtn.TextColor3           = Color3.fromRGB(255, 255, 255)
+    collapseBtn.BackgroundTransparency = 1
+    collapseBtn.AutoButtonColor      = false
+    collapseBtn.Parent               = collapseBtnFrame
+
+    local scrollFrame = Instance.new("ScrollingFrame")
+    scrollFrame.Name                  = "ScrollContent"
+    scrollFrame.Size                  = UDim2.new(1, 0, 1, -45)
+    scrollFrame.Position              = UDim2.new(0, 0, 0, 45)
+    scrollFrame.BackgroundTransparency= 1
+    scrollFrame.BorderSizePixel       = 0
+    scrollFrame.ScrollBarThickness    = 6
+    scrollFrame.ScrollBarImageColor3  = Color3.fromRGB(60, 60, 60)
+    scrollFrame.CanvasSize            = UDim2.new(0, 0, 0, 0)
+    scrollFrame.AutomaticCanvasSize   = Enum.AutomaticSize.Y
+    scrollFrame.Parent                = frame
+
+    local content = Instance.new("Frame")
+    content.Name                 = "Content"
+    content.Size                 = UDim2.new(1, 0, 0, 0)
+    content.AutomaticSize        = Enum.AutomaticSize.Y
+    content.BackgroundTransparency = 1
+    content.Parent               = scrollFrame
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft   = UDim.new(0, 15)
+    pad.PaddingRight  = UDim.new(0, 15)
+    pad.PaddingTop    = UDim.new(0, 15)
+    pad.PaddingBottom = UDim.new(0, 15)
+    pad.Parent        = content
+
+    local layout = Instance.new("UIListLayout")
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding   = UDim.new(0, 10)
+    layout.Parent    = content
+
+    local isCollapsed = false
+    local origSize    = frame.Size
+
+    collapseBtn.MouseButton1Click:Connect(function()
+        isCollapsed = not isCollapsed
+        if isCollapsed then
+            TweenService:Create(frame, TWEEN_SLOW, {Size = UDim2.new(0, 320, 0, 45)}):Play()
+            collapseBtn.Text = "+"
+            task.delay(ANIM_DURATION, function()
+                if isCollapsed then scrollFrame.Visible = false end
+            end)
+        else
+            scrollFrame.Visible = true
+            TweenService:Create(frame, TWEEN_SLOW, {Size = origSize}):Play()
+            collapseBtn.Text = "−"
+        end
+    end)
+
+    local function makeToggle(name, defaultState, callback)
+        local toggleFrame = createRoundedFrame(
+            UDim2.new(1, 0, 0, 38), nil, content,
+            false, 0.5, Color3.fromRGB(25, 25, 25), UDim.new(0, 8)
+        )
+
+        local lbl = Instance.new("TextLabel")
+        lbl.Size                 = UDim2.new(1, -60, 1, 0)
+        lbl.Position             = UDim2.new(0, 12, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text                 = name
+        lbl.Font                 = Enum.Font.GothamSemibold
+        lbl.TextSize             = 14
+        lbl.TextColor3           = Color3.fromRGB(200, 200, 200)
+        lbl.TextXAlignment       = Enum.TextXAlignment.Left
+        lbl.Parent               = toggleFrame
+
+        local btn = Instance.new("TextButton")
+        btn.Size                 = UDim2.new(0, 48, 0, 24)
+        btn.Position             = UDim2.new(1, -56, 0.5, -12)
+        btn.BackgroundColor3     = defaultState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(45, 45, 45)
+        btn.BorderSizePixel      = 0
+        btn.Text                 = ""
+        btn.AutoButtonColor      = false
+        btn.Parent               = toggleFrame
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(1, 0)
+        btnCorner.Parent       = btn
+
+        local knob = Instance.new("Frame")
+        knob.Size              = UDim2.new(0, 18, 0, 18)
+        knob.Position          = defaultState and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+        knob.BackgroundColor3  = Color3.fromRGB(15, 15, 15)
+        knob.BorderSizePixel   = 0
+        knob.Parent            = btn
+
+        local knobCorner = Instance.new("UICorner")
+        knobCorner.CornerRadius = UDim.new(1, 0)
+        knobCorner.Parent       = knob
+
+        local cur = defaultState
+        btn.MouseButton1Click:Connect(function()
+            cur = not cur
+            if cur then
+                TweenService:Create(btn,  TWEEN_FAST, {BackgroundColor3 = Color3.fromRGB(255, 255, 255)}):Play()
+                TweenService:Create(knob, TWEEN_FAST, {Position = UDim2.new(1, -21, 0.5, -9)}):Play()
+            else
+                TweenService:Create(btn,  TWEEN_FAST, {BackgroundColor3 = Color3.fromRGB(45, 45, 45)}):Play()
+                TweenService:Create(knob, TWEEN_FAST, {Position = UDim2.new(0, 3, 0.5, -9)}):Play()
+            end
+            callback(cur)
+        end)
+
+        return toggleFrame
+    end
+
+    makeToggle("Coins ESP",                  state.showCoins,        function(v) state.showCoins        = v updateAllESP() end)
+    makeToggle("Films ESP",                  state.showFilms,        function(v) state.showFilms        = v updateAllESP() end)
+    makeToggle("Medkits ESP",                state.showMedkits,      function(v) state.showMedkits      = v updateAllESP() end)
+    makeToggle("Chainsaws ESP",              state.showChainsaws,    function(v) state.showChainsaws    = v updateAllESP() end)
+    makeToggle("Escapes ESP",                state.showEscapes,      function(v) state.showEscapes      = v updateAllESP() end)
+    makeToggle("Batterys ESP",               state.showBatterys,     function(v) state.showBatterys     = v updateAllESP() end)
+    makeToggle("Bandages ESP",               state.showBandages,     function(v) state.showBandages     = v updateAllESP() end)
+    makeToggle("Survivors ESP",              state.showSurvivors,    function(v) state.showSurvivors    = v updateAllESP() end)
+    makeToggle("Slasher ESP",                state.showSlasher,      function(v) state.showSlasher      = v updateAllESP() end)
+    makeToggle("Friends ESP",                state.showFriends,      function(v) state.showFriends      = v updateAllESP() end)
+    makeToggle("Statistics UI",              state.showStatsUI,      function(v)
+        state.showStatsUI = v
+        if statsUI and statsUI.gui then statsUI.gui.Enabled = v end
+    end)
+    makeToggle("Fullbright",                 state.fullbright,       function(v)
+        state.fullbright = v
+        applyFullbright()
+        applyEnhancedFullbright()
+    end)
+    makeToggle("Fullbright [Enhanced]",      state.fullbrightEnhanced, function(v)
+        state.fullbrightEnhanced = v
+        applyFullbright()
+        applyEnhancedFullbright()
+    end)
+    makeToggle("Disable Bloom",              state.disableBloom,     function(v) state.disableBloom    = v applyEnhancedFullbright() end)
+    makeToggle("Disable Blur",               state.disableBlur,      function(v) state.disableBlur     = v applyEnhancedFullbright() end)
+    makeToggle("Remove Genophage Blindness", state.removeGenophage,  function(v) state.removeGenophage = v applyGenophageRemoval()    end)
+    makeToggle("Enable Glow Effects",        state.enableGlow,       function(v) state.enableGlow      = v updateGlowVisibility()     end)
+    makeToggle("Auto PickUp [Timed/Legit]",  state.autoPickup,       function(v) state.autoPickup      = v setupAutoPickup()          end)
+
+    -- Drag
+    local dragging, dragStart, startPos = false, nil, nil
+
+    titleBar.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging  = true
+            dragStart = input.Position
+            startPos  = frame.Position
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    table.insert(connections, UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+        and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        local d = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end))
+
+    table.insert(connections, UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end))
+
+    -- FIX: gameProcessed guard prevents M firing in chat
+    table.insert(connections, UserInputService.InputBegan:Connect(function(input, gp)
+        if gp then return end
+        if input.KeyCode ~= Enum.KeyCode.M then return end
+        local sf = frame:FindFirstChild("ScrollContent")
+        if sf and sf:IsA("ScrollingFrame") then
+            if frame.Visible then
+                menuScrollPosition = sf.CanvasPosition.Y
+            else
+                sf.CanvasPosition = Vector2.new(0, menuScrollPosition)
+            end
+        end
+        frame.Visible = not frame.Visible
+    end))
+end
+
+--[[ STATS UI ]]
+local function createStatsUI()
+    if statsUI then
+        statsUI.gui:Destroy()
+        statsUI = nil
+    end
+
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name           = "StatsUI"
+    screenGui.ResetOnSpawn   = false
+    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.IgnoreGuiInset = true
+    screenGui.Enabled        = state.showStatsUI
+    screenGui.Parent         = PlayerGui
+
+    local frame = createRoundedFrame(
+        UDim2.new(0, 220, 0, 32),
+        UDim2.new(0.25, -110, 0, 10),
+        screenGui,
+        {thicknessMultiplier = 1},
+        0.5,
+        Color3.fromRGB(15, 15, 15),
+        UDim.new(0, 8)
+    )
+    table.insert(mainGlowFrames, frame)
+    frame.Name             = "StatsFrame"
+    frame.ClipsDescendants = true
+
+    local statsLabel = Instance.new("TextLabel")
+    statsLabel.Name                 = "StatsLabel"
+    statsLabel.Size                 = UDim2.new(1, -10, 0, 16)
+    statsLabel.Position             = UDim2.new(0, 5, 0, 2)
+    statsLabel.BackgroundTransparency = 1
+    statsLabel.Text                 = "C: 0 | F: 0 | M: 0 | B: 0 | BD: 0"
+    statsLabel.Font                 = Enum.Font.GothamBold
+    statsLabel.TextSize             = 14
+    statsLabel.TextColor3           = Color3.fromRGB(255, 255, 255)
+    statsLabel.TextXAlignment       = Enum.TextXAlignment.Center
+    statsLabel.Parent               = frame
+
+    local slasherLabel = Instance.new("TextLabel")
+    slasherLabel.Name                 = "SlasherLabel"
+    slasherLabel.Size                 = UDim2.new(1, -10, 0, 12)
+    slasherLabel.Position             = UDim2.new(0, 5, 0, 18)
+    slasherLabel.BackgroundTransparency = 1
+    slasherLabel.Text                 = "Slasher Type: N/A"
+    slasherLabel.Font                 = Enum.Font.Gotham
+    slasherLabel.TextSize             = 10
+    slasherLabel.TextColor3           = Color3.fromRGB(200, 200, 200)
+    slasherLabel.TextXAlignment       = Enum.TextXAlignment.Center
+    slasherLabel.Parent               = frame
+
+    statsUI = {gui = screenGui, frame = frame, label = statsLabel, slasherLabel = slasherLabel}
+    return statsUI
+end
+
+--[[ ESP UPDATE LOOP ]]
+-- FIX: Uses cached espLabel, stats, outline — zero FindFirstChild calls per tick.
+runningTasks.espUpdate = task.spawn(function()
+    while task.wait(CONFIG.Performance.ESPUpdateInterval) do
+        safeCall(function()
+            slasherSortType    = "N/A"
+            slasherChainsawCount = "N/A"
+            local slasherFound = false
+
+            local anyEnabled = state.showSlasher or state.showSurvivors or state.showFriends
+                or state.showEscapes or state.showBatterys or state.showBandages
+                or state.showCoins  or state.showFilms    or state.showMedkits or state.showChainsaws
+            if not anyEnabled then return end
+
+            local char = LocalPlayer.Character
+            if not char then return end
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+
+            local hrpPos = hrp.Position
+            itemCounts = {coins = 0, films = 0, medkits = 0, batterys = 0, bandages = 0}
+
+            for obj, info in pairs(espHandles) do
+                local adornee = info.adornee
+                if adornee and adornee.Parent and info.gui and info.gui.Parent then
+                    local dist = (adornee.Position - hrpPos).Magnitude
+
+                    if dist > CONFIG.Performance.MaxESPDistance and info.type ~= "Slasher" then
+                        continue
+                    end
+
+                    local t = info.type
+
+                    if t == "Slasher" then
+                        local color = CONFIG.PlayerColors.Slasher
+                        local hasSaw = false
+                        local stats  = info.stats  -- cached, no FindFirstChild
+
+                        if stats and stats.Parent then
+                            local sawVal = stats:FindFirstChild("Chainsaw")
+                            if sawVal and sawVal:IsA("NumberValue") and sawVal.Value > 0 then
+                                hasSaw = true
+                                color  = CONFIG.PlayerColors.SlasherWithChainsaw
+                            end
+                            if not slasherFound then
+                                slasherFound = true
+                                local sType  = stats:FindFirstChild("SortType")
+                                slasherSortType      = (sType and sType:IsA("StringValue")) and sType.Value or "Unknown"
+                                slasherChainsawCount = hasSaw and tostring(sawVal.Value) or "N/A"
+                            end
+                        else
+                            if not slasherFound then
+                                slasherFound         = true
+                                slasherSortType      = "Unknown"
+                                slasherChainsawCount = "N/A"
+                            end
+                        end
+
+                        if info.outline and info.outline.Parent then
+                            info.outline.Color3 = color
+                        end
+
+                        local lbl = info.espLabel  -- cached, no FindFirstChild
+                        if lbl and info.playerName then
+                            local distTxt = dist <= 2000 and string.format(" (%.0fm)", dist) or ""
+                            lbl.Text = info.playerName .. " [Slasher]" .. distTxt
+                            lbl.TextColor3 = dist < 125 and COLOR_DIST_CLOSE
+                                or dist <= 215 and COLOR_DIST_MID
+                                or COLOR_DIST_FAR
+                        end
+
+                    elseif t == "Escape" then
+                        local lbl = info.espLabel
+                        if lbl then
+                            local distTxt = dist <= 2000 and string.format(" (%.0fm)", dist) or ""
+                            lbl.Text = "Escape" .. distTxt
+                        end
+
+                    elseif t == "Coin"    then itemCounts.coins    = itemCounts.coins    + 1
+                    elseif t == "Film"    then itemCounts.films    = itemCounts.films    + 1
+                    elseif t == "Medkit"  then itemCounts.medkits  = itemCounts.medkits  + 1
+                    elseif t == "Battery" then itemCounts.batterys = itemCounts.batterys + 1
+                    elseif t == "Bandage" then itemCounts.bandages = itemCounts.bandages + 1
+                    end
+                else
+                    removeESP(obj)
+                end
+            end
+
+            if statsUI and statsUI.label and statsUI.slasherLabel then
+                statsUI.label.Text = string.format(
+                    "C: %d | F: %d | M: %d | B: %d | BD: %d",
+                    itemCounts.coins, itemCounts.films, itemCounts.medkits,
+                    itemCounts.batterys, itemCounts.bandages
+                )
+                statsUI.slasherLabel.Text = string.format(
+                    "Slasher Type: %s | Ch: %s",
+                    slasherSortType, slasherChainsawCount
+                )
+            end
+        end, "espUpdateLoop")
+    end
+end)
+
+--[[ FRIENDS REFRESH LOOP ]]
+runningTasks.refreshFriends = task.spawn(function()
+    while task.wait(CONFIG.Performance.FriendsRefreshInterval) do
+        safeCall(refreshFriends, "refreshFriendsLoop")
+    end
+end)
+
+--[[ INIT ]]
+setupFullbrightProtection()
+setupEnhancedFullbrightProtection()
+setupGenophageProtection()
+
+task.defer(createUI)
+task.defer(createStatsUI)
+
+refreshFriends()
+applyFullbright()
+applyEnhancedFullbright()
+applyGenophageRemoval()
+
+task.wait(1)
+watchForNewRounds()
+task.defer(updateAllESP)
+runningTasks.dynamicGlow = setupDynamicGlow()
+
+--[[ CHARACTER TRACKING ]]
+-- FIX: retry if stats haven't replicated by the time CharacterAdded fires
+local function onCharacterAdded(char)
+    if char == LocalPlayer.Character then return end
+    updateCharacterESP(char)
+    if not espHandles[char] then
+        task.delay(2, function()
+            if char and char.Parent and not espHandles[char] then
+                updateCharacterESP(char)
+            end
+        end)
+    end
+end
+
+-- FIX: only connect CharacterAdded for non-LocalPlayer chars
+for _, player in ipairs(Players:GetPlayers()) do
+    if player ~= LocalPlayer then
+        if player.Character then onCharacterAdded(player.Character) end
+        table.insert(connections, player.CharacterAdded:Connect(onCharacterAdded))
+    end
+end
+
+table.insert(connections, Players.PlayerAdded:Connect(function(player)
+    if player == LocalPlayer then return end
+    table.insert(connections, player.CharacterAdded:Connect(onCharacterAdded))
+end))
+
+table.insert(connections, Players.PlayerRemoving:Connect(function(player)
+    if player ~= LocalPlayer and player.Character then
+        removeESP(player.Character)
+    end
+end))
+
+table.insert(connections, Workspace.ChildAdded:Connect(function(child)
+    if child:IsA("Model") and child:FindFirstChild("Humanoid") and child ~= LocalPlayer.Character then
+        updateCharacterESP(child)
+    end
+end))
+
+--[[ CLEANUP ]]
+local cleanedUp = false
+local function cleanup()
+    if cleanedUp then return end
+    cleanedUp = true
+
+    -- Cancel background tasks
+    for _, thread in pairs(runningTasks) do
+        if type(thread) == "thread" then
+            pcall(task.cancel, thread)
+        end
+    end
+    runningTasks = {}
+    stopPickup()
+
+    -- Disconnect all signals
+    for _, con in ipairs(connections) do
+        if con and type(con.Disconnect) == "function" then
+            pcall(con.Disconnect, con)
+        end
+    end
+    connections = {}
+
+    disconnectMonitors()
+
+    -- Restore lighting
+    safeCall(function()
+        Lighting.Brightness              = originalLighting.Brightness
+        Lighting.FogEnd                  = originalLighting.FogEnd
+        Lighting.GlobalShadows           = originalLighting.GlobalShadows
+        Lighting.Technology              = originalLighting.Technology
+        Lighting.EnvironmentDiffuseScale = originalLighting.EnvDiffuse
+        Lighting.EnvironmentSpecularScale= originalLighting.EnvSpecular
+        Lighting.ClockTime               = originalLighting.ClockTime
+        Lighting.Ambient                 = originalLighting.Ambient
+        Lighting.OutdoorAmbient          = originalLighting.OutdoorAmbient
+        if Lighting.Atmosphere then
+            Lighting.Atmosphere.Density = originalLighting.AtmosphereDensity
+        end
+        local bloom = Lighting:FindFirstChild("DefaultBloom")
+        if bloom then bloom.Enabled = originalLighting.BloomEnabled end
+        local blur  = Lighting:FindFirstChild("DefaultBlur")
+        if blur  then blur.Enabled  = originalLighting.BlurEnabled  end
+        local cc    = Lighting:FindFirstChild("GenophageColorCorrection")
+        if cc and originalLighting.GenophageEnabled ~= nil then
+            cc.Enabled    = originalLighting.GenophageEnabled
+            cc.Brightness = originalLighting.GenophageBrightness
+        end
+    end, "cleanup:lighting")
+
+    clearAllESP()
+
+    if statsUI then
+        pcall(function() statsUI.gui:Destroy() end)
+        statsUI = nil
+    end
+
+    local ui = PlayerGui:FindFirstChild("ESP_UI")
+    if ui then ui:Destroy() end
+
+    print("[STN] Cleanup completed")
+end
+
+-- FIX: cleanedUp flag prevents double-cleanup from both triggers firing
+Players.PlayerRemoving:Connect(function(player)
+    if player == LocalPlayer then cleanup() end
+end)
+
+script.AncestryChanged:Connect(function(_, parent)
+    if not parent then cleanup() end
+end)
+
+task.delay(1, function()
+    safeCall(function()
+        if state.fullbright then
+            applyFullbright()
+            applyEnhancedFullbright()
+        end
+    end, "initialFullbrightFix")
+end)
+
+print("[STN] Press M to toggle menu")
