@@ -1,1 +1,1 @@
-# yugvgjv
+my scripts for educational purposes
